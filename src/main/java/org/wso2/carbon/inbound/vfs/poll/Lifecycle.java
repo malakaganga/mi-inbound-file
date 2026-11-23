@@ -60,7 +60,7 @@ public class Lifecycle {
     private final LongFunction<VfsSession> workerFactory;
     private final Set<Generation> late = new LinkedHashSet<>();
     private volatile State state = State.RUNNING;
-    private Generation current;
+    private volatile Generation current;
     private Drain drain;
 
     public Lifecycle(String name, EndpointHealth health, LongFunction<List<VfsSession>> sessions,
@@ -78,11 +78,24 @@ public class Lifecycle {
         this.sessions = sessions;
         this.timeoutMillis = timeoutMillis;
         current = build(1);
+        health.observeRuntime(this::openClientCount);
         health.paused();
         if (TestPoints.enabled()) {
             WeakReference<Lifecycle> reference = new WeakReference<>(this);
             TestPoints.snapshot("lifecycle", name, () -> snapshot(reference));
         }
+    }
+
+    private int openClientCount() {
+        Generation generation = current;
+        if (generation.retired) {
+            return 0;
+        }
+        int total = 0;
+        for (VfsSession session : generation.sessions) {
+            total += session.getOpenClientCount();
+        }
+        return current == generation && !generation.retired ? total : 0;
     }
 
     private Generation build(long number) {

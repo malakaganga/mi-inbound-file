@@ -176,6 +176,10 @@ public class VfsSession {
         return value;
     }
 
+    public int getOpenClientCount() {
+        return manager.getOpenClientCount();
+    }
+
     public LockIo lockIo(String parameter) {
         return new LockIo(manager, options(parameter));
     }

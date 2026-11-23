@@ -185,15 +185,19 @@ public class LifecycleTest {
         try {
             EndpointHealth health = health(name);
             VfsSession old = mock(VfsSession.class);
+            org.mockito.Mockito.when(old.getOpenClientCount()).thenReturn(2);
             Lifecycle previous = new Lifecycle(name, health, n -> Arrays.asList(old), () -> 0);
             Generation late = previous.enterPoll();
             late.pollStarted();
+            assertEquals(2L, health.snapshot().get("openSessions"));
             previous.stop("destroy");
             previous.stop("destroy");
+            assertEquals(0L, health.snapshot().get("openSessions"));
             verify(old, times(1)).abort();
             verify(old, never()).closeAfterAbort();
 
             VfsSession fresh = mock(VfsSession.class);
+            org.mockito.Mockito.when(fresh.getOpenClientCount()).thenReturn(3);
             Lifecycle next = new Lifecycle(name, health, n -> Arrays.asList(fresh), () -> 0);
             next.resume();
             assertEquals(EndpointHealth.State.PAUSED, health.state());
@@ -203,6 +207,7 @@ public class LifecycleTest {
             first.pollStarted();
             previous.exitPoll(late);
             verify(old).closeAfterAbort();
+            assertEquals(3L, health.snapshot().get("openSessions"));
             previous.stop("destroy");
             assertEquals(EndpointHealth.State.OK, health.state());
             assertEquals(Lifecycle.State.RUNNING, next.state());

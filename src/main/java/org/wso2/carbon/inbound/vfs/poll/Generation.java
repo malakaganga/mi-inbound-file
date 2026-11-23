@@ -19,7 +19,7 @@ import org.wso2.carbon.inbound.vfs.conn.VfsSession;
 import org.wso2.vfs.shared.error.Classification;
 import org.wso2.vfs.shared.health.EndpointHealth;
 
-import java.util.ArrayList;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
@@ -43,7 +43,7 @@ public final class Generation {
     Generation(long number, List<VfsSession> sessions, Lifecycle lifecycle, EndpointHealth endpoint,
                String name, int workerCount, LongFunction<VfsSession> factory) {
         this.number = number;
-        this.sessions = new ArrayList<>(sessions);
+        this.sessions = new CopyOnWriteArrayList<>(sessions);
         this.pollSession = sessions.get(0);
         this.lifecycle = lifecycle;
         this.endpoint = endpoint;
