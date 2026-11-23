@@ -20,6 +20,8 @@ package org.wso2.carbon.inbound.vfs;
 
 import org.apache.axis2.AxisFault;
 import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.wso2.vfs.shared.log.UriMask;
 import org.apache.synapse.SynapseException;
 
 public class VFSTransportErrorHandler {
@@ -33,23 +35,7 @@ public class VFSTransportErrorHandler {
      * @param e       Exception
      */
     public static void logException(Log log, LogType type, String message, Exception e) {
-        switch (type) {
-            case INFO:
-                log.info(message, e);
-                break;
-            case DEBUG:
-                log.debug(message, e);
-                break;
-            case WARN:
-                log.warn(message, e);
-                break;
-            case ERROR:
-                log.error(message, e);
-                break;
-            case FATAL:
-                log.fatal(message, e);
-                break;
-        }
+        logException(log, type, message + (e == null ? "" : " " + e.getMessage()));
     }
 
     /**
@@ -74,6 +60,7 @@ public class VFSTransportErrorHandler {
      * @param message String message to be logged
      */
     public static void logException(Log log, LogType type, String message) {
+        message = UriMask.mask(message);
         switch (type) {
             case INFO:
                 log.info(message);
@@ -116,7 +103,7 @@ public class VFSTransportErrorHandler {
      */
     public static void handleException(Log log, String message, Exception e) throws SynapseException {
         logException(log, LogType.ERROR, message, e);
-        throw new SynapseException(message, e);
+        throw new SynapseException(UriMask.mask(message));
     }
 
     /**
@@ -142,7 +129,7 @@ public class VFSTransportErrorHandler {
      */
     public static void handleException(Log log, String message) throws SynapseException {
         logException(log, LogType.ERROR, message);
-        throw new SynapseException(message);
+        throw new SynapseException(UriMask.mask(message));
     }
 
     /**
@@ -155,7 +142,7 @@ public class VFSTransportErrorHandler {
      */
     public static void handleException(Log log, String message, String configName) throws SynapseException {
         logException(log, LogType.ERROR, message, configName);
-        throw new SynapseException(message);
+        throw new SynapseException(UriMask.mask(message));
     }
 
     /**
@@ -164,7 +151,7 @@ public class VFSTransportErrorHandler {
      * @param e InterruptedException
      */
     public static void printStackTrace(Exception e) {
-        e.printStackTrace();
+        logException(LogFactory.getLog(VFSTransportErrorHandler.class), LogType.ERROR, e.getClass().getSimpleName(), e);
     }
 
     /**
@@ -185,9 +172,9 @@ public class VFSTransportErrorHandler {
      */
     public static String constructLogMessage(String message, String configName) {
         if (null == configName || configName.trim().isEmpty()) {
-            return message;
+            return UriMask.mask(message);
         }
-        return "[Service: ".concat(configName).concat("] - ").concat(message);
+        return UriMask.mask("[inbound:" + configName + "] " + message);
     }
 
     /**

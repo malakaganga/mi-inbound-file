@@ -1,0 +1,625 @@
+/*
+ *  Copyright (c) 2025, WSO2 LLC. (https://www.wso2.com).
+ *
+ *  WSO2 LLC. licenses this file to you under the Apache License,
+ *  Version 2.0 (the "License"); you may not use this file except
+ *  in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing,
+ *  software distributed under the License is distributed on an
+ *  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ *  KIND, either express or implied.  See the License for the
+ *  specific language governing permissions and limitations
+ *  under the License.
+ */
+
+package org.wso2.carbon.inbound.vfs.poll;
+
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.wso2.carbon.inbound.vfs.Utils;
+import org.wso2.carbon.inbound.vfs.VFSConfig;
+import org.wso2.carbon.inbound.vfs.conn.VfsSession;
+import org.wso2.carbon.inbound.vfs.filter.FileSelector;
+import org.wso2.carbon.inbound.vfs.filter.UploadCheck;
+import org.wso2.carbon.inbound.vfs.processor.MoveTargetSpec;
+import org.wso2.org.apache.commons.vfs2.FileObject;
+import org.wso2.org.apache.commons.vfs2.FileSystemException;
+import org.wso2.org.apache.commons.vfs2.FileType;
+import org.wso2.org.apache.commons.vfs2.provider.AtomicOps;
+import org.wso2.org.apache.commons.vfs2.util.TestPoints;
+import org.wso2.vfs.shared.error.Classification;
+import org.wso2.vfs.shared.failstate.ActionResult;
+import org.wso2.vfs.shared.failstate.FailState;
+import org.wso2.vfs.shared.failstate.FailStateStore;
+import org.wso2.vfs.shared.lock.FolderListing;
+import org.wso2.vfs.shared.lock.LockIo;
+import org.wso2.vfs.shared.lock.LockOutcome;
+import org.wso2.vfs.shared.lock.ReservedNames;
+import org.wso2.vfs.shared.log.UriMask;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+
+import static org.wso2.carbon.inbound.vfs.VFSConstants.*;
+import static org.wso2.vfs.shared.error.ErrorClassifier.CallType.READ;
+
+public final class PollCycle {
+    private static final Log LOG = LogFactory.getLog(PollCycle.class);
+
+    private final FileTask.Services services;
+    private final String missingMessage;
+    private final VFSConfig config;
+    private final FileSelector selector;
+    private final boolean recursive;
+    private final String rootUri;
+    private final String clock;
+    private final long interval;
+    private boolean parentOwed = true;
+    private boolean absent;
+    private long backoff;
+    private long failedAt;
+
+    public PollCycle(FileTask.Services services, long interval, String sequenceName) {
+        this.services = services;
+        missingMessage = UriMask.mask("[inbound:" + services.endpoint + "] The injecting sequence is missing. "
+                + sequenceName).replaceAll("\\R", " ");
+        this.config = services.config;
+        this.interval = interval;
+        selector = new FileSelector(config, services.endpoint, services.log);
+        recursive = Utils.supportsSubDirectoryToken(config.getFileURI());
+        rootUri = recursive ? Utils.sanitizeFileUriWithSub(config.getFileURI()) : config.getFileURI();
+        clock = "pollwait." + services.endpoint;
+    }
+
+    public void run(Generation generation) {
+        new Poll(generation).run();
+    }
+
+    private static final class Candidate {
+        final String uri;
+        final String name;
+        final String relative;
+        final FolderListing.Metadata metadata;
+        final FolderListing listing;
+        final FileObject listed;
+
+        Candidate(FileObject file, String uri, FolderListing.Metadata metadata, String relative, FolderListing listing) {
+            this.uri = uri;
+            name = file.getName().getBaseName();
+            this.relative = relative;
+            this.metadata = metadata;
+            this.listing = listing;
+            listed = file;
+        }
+    }
+
+    private final class Poll {
+        final Generation generation;
+        final VfsSession session;
+        final List<Candidate> candidates = new ArrayList<>();
+        final List<FolderListing> listings = new ArrayList<>();
+        final Set<String> present = new HashSet<>();
+        final List<CompletableFuture<FileTask.Outcome>> workers = new ArrayList<>();
+        boolean listed;
+        boolean missingSequence;
+        int count;
+        boolean usedSession;
+        Classification failure;
+        long callStart;
+
+        Poll(Generation generation) {
+            this.generation = generation;
+            session = generation.pollSession;
+        }
+
+        void run() {
+            boolean skipped = false;
+            try {
+                callStart = System.nanoTime();
+                generation.pollStarted();
+                services.log.debug("Poll started.");
+                services.locks.checkHeldAges();
+                missingSequence = services.inject.sequence() == null;
+                if (missingSequence || (backoff > 0 && now() - failedAt < backoff)) {
+                    skipped = true;
+                    return;
+                }
+                session.beforePoll();
+                usedSession = true;
+                long startingResets = session.resetCount();
+                try (FileObject root = resolveRoot()) {
+                    if (root == null || !running()) {
+                        return;
+                    }
+                    callStart = System.nanoTime();
+                    FailStateStore.PendingResult pending = services.store.runPending(io());
+                    if (handleFailure(pending.failure)) {
+                        return;
+                    }
+                    for (FailState record : pending.dropped) {
+                        report(record);
+                    }
+                    if (!running()) {
+                        return;
+                    }
+                    listingPoint();
+                    scan(root);
+                    if (!listed || !running()) {
+                        return;
+                    }
+                    backoff = 0;
+                    selector.retain(present);
+                    if (TestPoints.enabled()) {
+                        TestPoints.hold("poll.after-listing", services.endpoint);
+                    }
+                    order();
+                    if (!listings.isEmpty()) {
+                        services.locks.sweepOrphans(io(), listings);
+                        if (!swept(services.store.sweep(io(), listings))) {
+                            return;
+                        }
+                    }
+                    for (Candidate candidate : candidates) {
+                        if (!running() || session.resetCount() - startingResets >= 3 || missing() || atLimit()) {
+                            break;
+                        }
+                        admit(candidate);
+                    }
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            } catch (Exception problem) {
+                handleFailure(classify(problem));
+                services.log.error("Poll failed. " + problem.getClass().getSimpleName()
+                        + (failure == null ? "" : " " + failure.getStatusText()));
+            } finally {
+                try {
+                    awaitWorkers();
+                    if (missingSequence) {
+                        LOG.error(missingMessage);
+                    }
+                } finally {
+                    if (!listed && failure != null && failure.getKind().isTransport()) {
+                        failedAt = now();
+                        backoff = backoff == 0 ? Math.max(1000, Math.min(interval, 300000))
+                                : Math.min(300000, 2 * backoff);
+                    }
+                    if (usedSession) {
+                        session.remoteCallEnded();
+                    }
+                    if (skipped) {
+                        generation.pollSkipped();
+                    } else {
+                        generation.pollFinished(listed, failure);
+                    }
+                }
+            }
+        }
+
+        void listingPoint() {
+            if (TestPoints.enabled()) {
+                TestPoints.hold("poll.before-listing", services.endpoint);
+                TestPoints.Fault fault = TestPoints.fault("poll.listing", services.endpoint);
+                if (fault != null && "runtime-exception".equals(fault.token())) {
+                    throw new IllegalStateException("The listing test point failed.");
+                }
+            }
+        }
+
+        FileObject resolveRoot() throws IOException, InterruptedException {
+            for (int attempt = 1; running(); attempt++) {
+                callStart = System.nanoTime();
+                try {
+                    FileObject root = session.resolve(rootUri, session.options(TRANSPORT_FILE_FILE_URI));
+                    failure = null;
+                    return root;
+                } catch (FileSystemException problem) {
+                    handleFailure(classify(problem));
+                    if (attempt >= config.getMaxRetryCount()) {
+                        services.log.error("Could not resolve the poll root. " + failure.getStatusText());
+                        return null;
+                    }
+                    if (!pause(config.getReconnectTimeout())) {
+                        break;
+                    }
+                }
+            }
+            return null;
+        }
+
+        boolean handleFailure(Classification cause) {
+            if (cause == null) {
+                return false;
+            }
+            failure = cause;
+            if (cause.getKind().isTransport()) {
+                session.resetCurrentLocation(TRANSPORT_FILE_FILE_URI, rootUri, cause.getCause());
+                generation.transportFault(cause);
+            }
+            return true;
+        }
+
+        Classification classify(Exception problem) {
+            return services.classifier.classify(problem,
+                    TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - callStart), READ);
+        }
+
+        void scan(FileObject root) throws IOException {
+            callStart = System.nanoTime();
+            FileType type = root.getType();
+            if (type == FileType.IMAGINARY && AtomicOps.existsNow(root)) {
+                root.refresh();
+                type = root.getType();
+                if (type == FileType.IMAGINARY) {
+                    throw new IOException("The root type changed during the poll.");
+                }
+            }
+            if (type == FileType.FOLDER) {
+                absent = false;
+                list(root, "");
+            } else {
+                String uri = singleFileUri(root);
+                FolderListing parent = parentOwed ? parentListing(root) : null;
+                if (type == FileType.IMAGINARY) {
+                    if (!absent) {
+                        services.log.warn("The poll root is absent. " + rootUri);
+                    } else {
+                        services.log.debug("The poll root is absent. " + rootUri);
+                    }
+                    absent = true;
+                    FailStateStore.SweepResult result = services.store.checkAbsentSingleFile(io(), uri, parent);
+                    if (!swept(result)) {
+                        return;
+                    }
+                    parentOwed = false;
+                    services.locks.checkAbsentSingleFile(io(), uri);
+                } else if (type == FileType.FILE) {
+                    absent = false;
+                    if (!reserved(root.getName().getBaseName(), false)) {
+                        candidate(root, uri, metadata(root), "", parent);
+                    }
+                }
+            }
+            listed = true;
+        }
+
+        String singleFileUri(FileObject file) {
+            String configured = Utils.stripVfsSchemeIfPresent(rootUri);
+            String scheme = file.getName().getScheme() + ":";
+            // A provider can render an escaped path delimiter as a literal query delimiter.
+            // Keep the original URI for every subsequent lookup. Native paths still need the provider's URI.
+            return configured.regionMatches(true, 0, scheme, 0, scheme.length())
+                    ? configured : file.getName().getURI();
+        }
+
+        FolderListing parentListing(FileObject file) throws IOException {
+            try {
+                FileObject parent = file.getParent();
+                if (parent == null || !AtomicOps.existsNow(parent)) {
+                    parentOwed = false;
+                    return null;
+                }
+                Map<String, FolderListing.Metadata> names = new LinkedHashMap<>();
+                String marker = file.getName().getBaseName() + ".fail";
+                for (FileObject child : parent.getChildren()) {
+                    String name = child.getName().getBaseName();
+                    names.put(name, marker.equals(name) ? metadata(child) : new FolderListing.Metadata(-1, 0));
+                }
+                return FolderListing.of(parent.getName().getURI(), names);
+            } catch (FileSystemException problem) {
+                if (classify(problem).getKind().isTransport()) {
+                    throw problem;
+                }
+                services.log.warn("Could not list the parent folder of " + file.getName().getURI());
+                parentOwed = false;
+                return null;
+            }
+        }
+
+        boolean reserved(String name, boolean folder) {
+            return ReservedNames.isReserved(name, folder, config.getTempFolderName(), config.getTempFileSuffix());
+        }
+
+        FolderListing.Metadata metadata(FileObject file) throws FileSystemException {
+            return new FolderListing.Metadata(file.getContent().getSize(), file.getContent().getLastModifiedTime());
+        }
+
+        void list(FileObject folder, String relative) throws IOException {
+            FileObject[] children = folder.getChildren();
+            Map<String, FolderListing.Metadata> names = new LinkedHashMap<>();
+            Set<String> files = new HashSet<>();
+            Set<String> folders = new HashSet<>();
+            for (FileObject child : children) {
+                String name = child.getName().getBaseName();
+                FileType type = child.getType();
+                boolean directory = type == FileType.FOLDER;
+                FolderListing.Metadata entry = new FolderListing.Metadata(-1, 0);
+                if (type == FileType.FILE && (!reserved(name, false) || name.endsWith(".fail"))) {
+                    try {
+                        entry = metadata(child);
+                        if (!reserved(name, false)) {
+                            files.add(name);
+                        }
+                    } catch (FileSystemException problem) {
+                        if (classify(problem).getKind().isTransport()) {
+                            throw problem;
+                        }
+                        services.log.debug("Could not read the metadata for " + child.getName().getURI());
+                    }
+                } else if (directory && recursive && !reserved(name, true)) {
+                    folders.add(name);
+                }
+                names.put(name, entry);
+            }
+            FolderListing listing = FolderListing.of(folder.getName().getURI(), names);
+            listings.add(listing);
+            for (FileObject child : children) {
+                String name = child.getName().getBaseName();
+                if (files.contains(name)) {
+                    candidate(child, child.getName().getURI(), names.get(name), relative, listing);
+                } else if (folders.contains(name)) {
+                    list(child, relative + "/" + name);
+                }
+            }
+        }
+
+        void candidate(FileObject file, String uri, FolderListing.Metadata data, String relative, FolderListing listing) {
+            Candidate candidate = new Candidate(file, uri, data, relative, listing);
+            candidates.add(candidate);
+            present.add(candidate.uri);
+        }
+
+        void order() {
+            String sort = config.getFileSortParam();
+            Comparator<Candidate> comparator;
+            if (FILE_SORT_VALUE_NAME.equals(sort)) {
+                comparator = Comparator.comparing(candidate -> candidate.uri);
+            } else if (FILE_SORT_VALUE_SIZE.equals(sort)) {
+                comparator = Comparator.comparingLong(candidate -> candidate.metadata.size);
+            } else if (FILE_SORT_VALUE_LASTMODIFIEDTIMESTAMP.equals(sort)) {
+                comparator = Comparator.comparingLong(candidate -> candidate.metadata.modified);
+            } else {
+                return;
+            }
+            candidates.sort(config.isFileSortAscending() ? comparator : comparator.reversed());
+        }
+
+        boolean swept(FailStateStore.SweepResult result) {
+            if (handleFailure(result.failure)) {
+                return false;
+            }
+            for (FailState record : result.records) {
+                report(record);
+            }
+            return true;
+        }
+
+        void report(FailState record) {
+            if (record.action.step != ActionResult.Step.RENAME || record.action.clear) {
+                services.log.debug("The source of a pending action is gone. " + record.identity.uri);
+                return;
+            }
+            String parameter = record.moveOrigin == FailState.MoveOrigin.FALLBACK ? TRANSPORT_FILE_MOVE_AFTER_FAILED_MOVE
+                    : record.outcome == FailState.Outcome.SUCCESS ? TRANSPORT_FILE_MOVE_AFTER_PROCESS
+                    : TRANSPORT_FILE_MOVE_AFTER_FAILURE;
+            MoveTargetSpec spec = services.targets.get(parameter);
+            if (spec == null || record.failedTarget == null) {
+                services.log.warn("Could not check the move target for " + record.identity.uri);
+                return;
+            }
+            MoveTargetSpec.Target target = spec.recorded("", record.failedTarget);
+            try {
+                FailStateStore.Comparison result = services.store.compareTarget(session.lockIo(parameter),
+                        record.identity, target.fileUri);
+                switch (result.match) {
+                    case MATCH:
+                        services.log.debug("The move completed. " + target.fileUri);
+                        break;
+                    case MATCH_INFERRED:
+                        generation.inferredMove();
+                        services.log.warn("The move was inferred from the target. " + target.fileUri);
+                        break;
+                    case TRANSPORT_ERROR:
+                        session.resetCurrentLocation(parameter, target.fileUri, result.failure.getCause());
+                        generation.transportFault(result.failure);
+                        services.log.warn("Could not check the move target. " + target.fileUri);
+                        break;
+                    default:
+                        services.log.warn("The source is gone and the target does not hold the file. "
+                                + record.identity.uri + " " + target.fileUri);
+                }
+            } catch (IOException problem) {
+                Classification issue = classify(problem);
+                if (issue.getKind().isTransport()) {
+                    session.resetCurrentLocation(parameter, target.fileUri, issue.getCause());
+                    generation.transportFault(issue);
+                }
+                services.log.warn("Could not check the move target. " + target.fileUri);
+            }
+        }
+
+        void admit(Candidate file) throws InterruptedException {
+            if (!selector.accept(file.uri, file.name, file.metadata.size, file.metadata.modified,
+                    System.currentTimeMillis())) {
+                return;
+            }
+            String marked = file.listing == null ? null : file.listing.markedBase(file.uri);
+            boolean marker = marked != null;
+            if (marker) {
+                FolderListing.Metadata canonical = file.listing.names().get(marked + ".fail");
+                boolean staged = !file.listing.stagingNames(marked).isEmpty();
+                if (services.store.peek(file.uri, canonical == null ? -1 : canonical.size,
+                        canonical == null ? 0 : canonical.modified, staged) == FailStateStore.Peek.SKIP) {
+                    return;
+                }
+            }
+            WorkerPool.Slot slot = null;
+            FileTask task = null;
+            boolean counted = false;
+            try {
+                if (!marker && generation.workerPool != null) {
+                    slot = generation.workerPool.reserve();
+                    if (slot == null || missing()) {
+                        return;
+                    }
+                }
+                if (!marker && config.getCheckSizeInterval() > 0) {
+                    callStart = System.nanoTime();
+                    UploadCheck.Result upload = UploadCheck.check(io(), file.uri, config.getCheckSizeInterval(),
+                            this::pause);
+                    if (!upload.stable) {
+                        if (upload.failure != null && upload.failure.getKind().isTransport()) {
+                            handleFailure(upload.failure);
+                        } else {
+                            services.log.debug("The file is still uploading. " + file.uri);
+                        }
+                        return;
+                    }
+                }
+                counted = generation.lifecycle.fileStarted(generation);
+                if (!counted) {
+                    return;
+                }
+                task = new FileTask(services, generation, file.uri, file.relative, listed);
+                LockOutcome lock = task.acquire(file.listing);
+                if (listings.isEmpty() && file.listing != null) {
+                    parentOwed = false;
+                }
+                if (lock.kind != LockOutcome.Kind.ACQUIRED) {
+                    return;
+                }
+                if (slot == null) {
+                    counted = false;
+                    boolean deferReplacement = marker && generation.workerPool != null;
+                    FileTask.Outcome outcome = task.processOnPoll(file.listed, deferReplacement);
+                    FailStateStore.Decision decision = task.decision();
+                    task = null;
+                    missingSequence |= outcome == FileTask.Outcome.MISSING_SEQUENCE;
+                    if (decision == FailStateStore.Decision.RETRY || marker
+                            && (deferReplacement || decision != FailStateStore.Decision.PROCESS)) {
+                        return;
+                    }
+                } else {
+                    CompletableFuture<FileTask.Outcome> future = slot.submit(task);
+                    slot = null;
+                    if (future == null) {
+                        return;
+                    }
+                    counted = false;
+                    task = null;
+                    workers.add(future);
+                }
+                count++;
+                if (config.getFileProcessingInterval() != null) {
+                    pause(config.getFileProcessingInterval());
+                }
+            } catch (IOException problem) {
+                Classification cause = classify(problem);
+                if (cause.getKind().isTransport()) {
+                    handleFailure(cause);
+                } else {
+                    services.log.debug("Could not check the upload of " + file.uri);
+                }
+            } finally {
+                if (task != null) {
+                    task.abandon();
+                }
+                if (counted) {
+                    generation.lifecycle.fileEnded(generation, null);
+                }
+                if (slot != null) {
+                    slot.cancel();
+                }
+            }
+        }
+
+        boolean atLimit() {
+            Integer limit = config.getFileProcessingCount();
+            return limit != null && count >= limit;
+        }
+
+        boolean missing() {
+            workers.removeIf(worker -> {
+                if (!worker.isDone()) {
+                    return false;
+                }
+                missingSequence |= worker.join() == FileTask.Outcome.MISSING_SEQUENCE;
+                return true;
+            });
+            return missingSequence;
+        }
+
+        void awaitWorkers() {
+            boolean interrupted = false;
+            try {
+                for (CompletableFuture<FileTask.Outcome> worker : workers) {
+                    worker.whenComplete((result, problem) -> {
+                        synchronized (generation.lifecycle) {
+                            generation.lifecycle.notifyAll();
+                        }
+                    });
+                    synchronized (generation.lifecycle) {
+                        while (!worker.isDone() && !generation.isRetired()) {
+                            try {
+                                generation.lifecycle.wait(1000);
+                            } catch (InterruptedException stop) {
+                                interrupted = true;
+                            }
+                        }
+                    }
+                    if (generation.isRetired()) {
+                        return;
+                    }
+                    if (worker.isCompletedExceptionally()) {
+                        services.log.error("A file worker failed.");
+                    } else {
+                        missingSequence |= worker.join() == FileTask.Outcome.MISSING_SEQUENCE;
+                    }
+                }
+            } finally {
+                if (interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        }
+
+        boolean running() {
+            return !generation.isRetired() && generation.lifecycle.state() == Lifecycle.State.RUNNING;
+        }
+
+        boolean pause(long millis) throws InterruptedException {
+            long start = now();
+            if (TestPoints.enabled()) {
+                TestPoints.event("pollwait.deadline", services.endpoint, "deadline=" + (TestPoints.wallMillis(clock) + millis));
+            }
+            synchronized (generation.lifecycle) {
+                long remaining = millis;
+                while (remaining > 0 && running()) {
+                    generation.lifecycle.wait(TestPoints.slice(clock, remaining));
+                    remaining = millis - (now() - start);
+                }
+                return running();
+            }
+        }
+
+        LockIo io() {
+            return session.lockIo(TRANSPORT_FILE_FILE_URI);
+        }
+    }
+
+    private long now() {
+        return TimeUnit.NANOSECONDS.toMillis(TestPoints.nanoTime(clock));
+    }
+}
