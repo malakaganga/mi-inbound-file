@@ -489,7 +489,11 @@ public final class VFSConfig {
         Map<String, String> endpoint = new HashMap<>(source);
         for (String name : p.stringPropertyNames()) {
             if (isConnectionOption(name)) {
-                endpoint.put(optionKey(name), p.getProperty(name));
+                String value = p.getProperty(name);
+                if (value.isEmpty() && isOptionalTimeoutField(name)) {
+                    continue;
+                }
+                endpoint.put(optionKey(name), value);
             }
         }
         Map<String, Map<String, String>> result = new HashMap<>();
@@ -499,6 +503,11 @@ public final class VFSConfig {
         addOptions(result, TRANSPORT_FILE_MOVE_AFTER_FAILED_MOVE, moveAfterFailedMove, endpoint, true);
         addOptions(result, REPLY_FILE_URI, replyFileURI, endpoint, true);
         return Collections.unmodifiableMap(result);
+    }
+
+    private static boolean isOptionalTimeoutField(String key) {
+        return (PREFIX + "FTPConnectTimeout").equals(key) || (PREFIX + "FTPSocketTimeout").equals(key)
+                || (PREFIX + "SFTPConnectTimeout").equals(key) || (PREFIX + "SFTPSessionTimeout").equals(key);
     }
 
     private static boolean isConnectionOption(String key) {

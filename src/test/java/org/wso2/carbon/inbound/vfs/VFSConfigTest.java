@@ -315,6 +315,28 @@ class VFSConfigTest {
         assertTrue(assertThrows(IllegalArgumentException.class, () -> new VFSConfig(p)).getMessage().contains(key));
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"SFTPSessionTimeout", "SFTPConnectTimeout", "FTPConnectTimeout", "FTPSocketTimeout"})
+    void emptyTimeoutFieldHasTheSamePrecedenceAsAnOmittedField(String suffix) {
+        String key = PREFIX + suffix;
+        Properties p = properties();
+        p.setProperty(key, "");
+        assertNull(new VFSConfig(p).getOptions(URI_KEY).get(key));
+        p.setProperty(URI_KEY, "sftp://src/in?" + key + "=42000");
+        assertEquals("42000", new VFSConfig(p).getOptions(URI_KEY).get(key));
+        p.setProperty(key, "30000");
+        assertEquals("30000", new VFSConfig(p).getOptions(URI_KEY).get(key));
+        p.setProperty(key, " ");
+        assertThrows(IllegalArgumentException.class, () -> new VFSConfig(p));
+    }
+
+    @Test
+    void emptyUnrelatedNumericOptionStillFailsValidation() {
+        Properties p = properties();
+        p.setProperty(PREFIX + "FTPDataTimeout", "");
+        assertThrows(IllegalArgumentException.class, () -> new VFSConfig(p));
+    }
+
     @Test
     void sshSettingsRemainLocalToEachOptionsObject() throws Exception {
         String[] keys = { "SFTPKeyExchangeAlgorithms", "SFTPHostKeyAlgorithms", "SFTPCiphers", "SFTPMacs",
