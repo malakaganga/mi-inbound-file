@@ -26,6 +26,8 @@ import org.wso2.carbon.inbound.vfs.poll.Lifecycle;
 import org.wso2.vfs.shared.health.EndpointHealth;
 import org.wso2.vfs.shared.health.HealthRegistry;
 
+import java.lang.ref.ReferenceQueue;
+import java.lang.ref.WeakReference;
 import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -49,6 +51,35 @@ class VFSConsumerLifecycleTest {
         Field field = VFSConsumer.class.getDeclaredField(name);
         field.setAccessible(true);
         return type.cast(field.get(consumer));
+    }
+
+    @Test
+    void destroyedConsumerCanBeCollectedWhilePausedHealthRemainsRegistered() throws Exception {
+        String name = UUID.randomUUID().toString();
+        try {
+            ReferenceQueue<VFSConsumer> collected = new ReferenceQueue<>();
+            WeakReference<VFSConsumer> consumer = deployAndDestroy(name, collected);
+            EndpointHealth health = HealthRegistry.register(HealthRegistry.Kind.INBOUND, name, 1000);
+            for (int i = 0; i < 40; i++) {
+                System.gc();
+                if (collected.remove(50) == consumer) {
+                    break;
+                }
+            }
+            assertNull(consumer.get(), "Registered health retained the destroyed consumer");
+            assertEquals(EndpointHealth.State.PAUSED, health.state());
+            assertEquals(0L, health.snapshot().get("openSessions"));
+        } finally {
+            HealthRegistry.unregister(HealthRegistry.Kind.INBOUND, name);
+        }
+    }
+
+    private WeakReference<VFSConsumer> deployAndDestroy(String name, ReferenceQueue<VFSConsumer> collected) {
+        Properties options = new Properties();
+        options.setProperty("transport.vfs.FileURI", root.toUri().toString());
+        VFSConsumer consumer = new VFSConsumer(options, name, null, 1000, "main", null, false, true);
+        consumer.destroy();
+        return new WeakReference<>(consumer, collected);
     }
 
     @Test

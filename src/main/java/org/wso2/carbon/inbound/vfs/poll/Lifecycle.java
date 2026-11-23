@@ -32,7 +32,7 @@ import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
 import java.util.function.LongFunction;
 
-public class Lifecycle {
+public class Lifecycle implements EndpointHealth.RuntimeMetrics {
 
     public enum State { RUNNING, DRAINING, STOPPED }
 
@@ -54,6 +54,7 @@ public class Lifecycle {
     private final String name;
     private final String prefix;
     private final EndpointHealth health;
+    private final EndpointHealth.RuntimeMetrics observer;
     private final LongFunction<List<VfsSession>> sessions;
     private final LongSupplier timeoutMillis;
     private final int workerCount;
@@ -78,15 +79,18 @@ public class Lifecycle {
         this.sessions = sessions;
         this.timeoutMillis = timeoutMillis;
         current = build(1);
-        health.observeRuntime(this::openClientCount);
-        health.paused();
+        synchronized (health) {
+            observer = health.observeInboundSessions(this);
+            health.paused();
+        }
         if (TestPoints.enabled()) {
             WeakReference<Lifecycle> reference = new WeakReference<>(this);
             TestPoints.snapshot("lifecycle", name, () -> snapshot(reference));
         }
     }
 
-    private int openClientCount() {
+    @Override
+    public int getOpenClientCount() {
         Generation generation = current;
         if (generation.retired) {
             return 0;
@@ -295,7 +299,11 @@ public class Lifecycle {
             } finally {
                 synchronized (this) {
                     try {
-                        health.paused();
+                        synchronized (health) {
+                            if (health.observesRuntime(observer)) {
+                                health.paused();
+                            }
+                        }
                     } finally {
                         state = State.STOPPED;
                         record.done = true;
@@ -399,7 +407,11 @@ public class Lifecycle {
                 health.namedLog().error("Could not resume the endpoint. " + failure.getClass().getSimpleName());
                 return;
             }
-            health.resumed();
+            synchronized (health) {
+                if (health.observesRuntime(observer)) {
+                    health.resumed();
+                }
+            }
             state = State.RUNNING;
         }
         closeOwed(stopped);

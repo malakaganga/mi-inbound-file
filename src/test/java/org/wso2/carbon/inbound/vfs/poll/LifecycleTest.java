@@ -222,6 +222,39 @@ public class LifecycleTest {
     }
 
     @Test
+    void replacementOwnsHealthAcrossOldStopAndResume() {
+        String name = UUID.randomUUID().toString();
+        try {
+            EndpointHealth health = health(name);
+            Lifecycle old = new Lifecycle(name, health, n -> Arrays.asList(mock(VfsSession.class)), () -> 0);
+            Lifecycle replacement = new Lifecycle(name, health, n -> {
+                VfsSession session = mock(VfsSession.class);
+                org.mockito.Mockito.when(session.getOpenClientCount()).thenReturn((int) n + 2);
+                return Arrays.asList(session);
+            }, () -> 0);
+            Generation current = replacement.enterPoll();
+            current.pollStarted();
+            replacement.exitPoll(current);
+            old.stop("destroy");
+            assertEquals(EndpointHealth.State.OK, health.state());
+            assertEquals(3L, health.snapshot().get("openSessions"));
+            replacement.stop("pause");
+            old.resume();
+            assertEquals(EndpointHealth.State.PAUSED, health.state());
+            assertEquals(0L, health.snapshot().get("openSessions"));
+            replacement.resume();
+            old.stop("destroy");
+            assertEquals(EndpointHealth.State.OK, health.state());
+            assertEquals(4L, health.snapshot().get("openSessions"));
+            replacement.stop("destroy");
+            assertEquals(EndpointHealth.State.PAUSED, health.state());
+            assertEquals(0L, health.snapshot().get("openSessions"));
+        } finally {
+            HealthRegistry.unregister(HealthRegistry.Kind.INBOUND, name);
+        }
+    }
+
+    @Test
     void standbyUndeployAndFailedActivateLeaveNoWorkAdmitted() {
         String name = UUID.randomUUID().toString();
         try {
