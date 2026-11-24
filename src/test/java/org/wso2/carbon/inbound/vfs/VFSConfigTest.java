@@ -160,6 +160,19 @@ class VFSConfigTest {
     }
 
     @ParameterizedTest
+    @CsvSource({"TempFolderName,''", "TempFolderName,.", "TempFolderName,..", "TempFolderName,a/b",
+            "TempFolderName,a\\b", "TempFileSuffix,''", "TempFileSuffix,part", "TempFileSuffix,.",
+            "TempFileSuffix,.a/b", "TempFileSuffix,.a\\b", "TempFileSuffix,.lock", "TempFileSuffix,.fail",
+            "TempFileSuffix,.x.next"})
+    void refusesATempNameThatTheWriterCanNotUse(String name, String value) {
+        Properties p = properties();
+        String key = PREFIX + name;
+        p.setProperty(key, value);
+        String message = assertThrows(IllegalArgumentException.class, () -> new VFSConfig(p)).getMessage();
+        assertTrue(message.startsWith("Invalid value for " + key + ". It must "), message);
+    }
+
+    @ParameterizedTest
     @ValueSource(strings = {"-1", "1m", "4.5s", "9223372036854776s", "bad"})
     void invalidDurationNamesParameter(String value) {
         Properties p = properties();

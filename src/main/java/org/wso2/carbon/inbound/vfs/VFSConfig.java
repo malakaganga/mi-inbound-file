@@ -196,8 +196,8 @@ public final class VFSConfig {
         moveTimestamp = datePattern(p, TRANSPORT_FILE_MOVE_TIMESTAMP_FORMAT);
         subfolderTimestamp = datePattern(p, SUBFOLDER_TIMESTAMP);
         updateLastModified = flag(p, UPDATE_LAST_MODIFIED, true);
-        tempFolderName = p.getProperty(PREFIX + "TempFolderName", ".part");
-        tempFileSuffix = p.getProperty(PREFIX + "TempFileSuffix", ".part");
+        tempFolderName = tempName(p, PREFIX + "TempFolderName", false);
+        tempFileSuffix = tempName(p, PREFIX + "TempFileSuffix", true);
         maxRetryCount = integer(p, MAX_RETRY_COUNT, DEFAULT_MAX_RETRY_COUNT, 0);
         reconnectTimeout = timeout(p, RECONNECT_TIMEOUT, DEFAULT_RECONNECT_TIMEOUT, true);
         stopTimeout = timeout(p, PREFIX + "StopTimeout", 60000, false);
@@ -352,6 +352,20 @@ public final class VFSConfig {
             } catch (IllegalArgumentException e) {
                 throw invalid(TRANSPORT_FILE_FILE_NAME_PATTERN);
             }
+        }
+        return value;
+    }
+
+    private static String tempName(Properties p, String key, boolean suffix) {
+        String value = p.getProperty(key, ".part");
+        boolean valid = suffix ? value.length() > 1 && value.startsWith(".") && !value.endsWith(".lock")
+                && !value.endsWith(".fail") && !value.endsWith(".next")
+                : !value.isEmpty() && !value.equals(".") && !value.equals("..");
+        if (!valid || value.indexOf('/') >= 0 || value.indexOf('\\') >= 0) {
+            throw new IllegalArgumentException("Invalid value for " + key + ". It must " + (suffix
+                    ? "start with a dot, have at least one character after it, hold no path separator and not end"
+                    + " in .lock, .fail or .next, which the inbound uses for its own files."
+                    : "be a folder name with no path separator."));
         }
         return value;
     }
