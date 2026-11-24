@@ -28,6 +28,7 @@ import org.wso2.org.apache.commons.vfs2.FileSystemException;
 import org.wso2.org.apache.commons.vfs2.FileType;
 import org.wso2.org.apache.commons.vfs2.provider.AtomicOps;
 import org.wso2.org.apache.commons.vfs2.provider.Fault;
+import org.wso2.org.apache.commons.vfs2.provider.Faults;
 import org.wso2.org.apache.commons.vfs2.provider.MoveFailedException;
 import org.wso2.org.apache.commons.vfs2.provider.MoveOptions;
 import org.wso2.org.apache.commons.vfs2.provider.UnclearResultException;
@@ -167,7 +168,18 @@ public final class MoveAction {
             FileType type = folder.getType();
             if (type == FileType.IMAGINARY && create) {
                 start = System.nanoTime();
-                folder.createFolder();
+                try {
+                    folder.createFolder();
+                } catch (FileSystemException failure) {
+                    // Another worker or node can make the folder between the look and the create.
+                    if (Faults.isTransport(failure)) {
+                        throw failure;
+                    }
+                    folder.refresh();
+                    if (folder.getType() != FileType.FOLDER) {
+                        throw failure;
+                    }
+                }
             } else if (type != FileType.FOLDER) {
                 FileSystemException error = new FileSystemException("The configured move folder is unavailable.");
                 error.setFault(type == FileType.IMAGINARY ? Fault.MISSING : Fault.APPLICATION);

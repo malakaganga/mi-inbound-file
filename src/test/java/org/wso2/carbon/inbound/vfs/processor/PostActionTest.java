@@ -31,6 +31,7 @@ import org.wso2.org.apache.commons.vfs2.FileObject;
 import org.wso2.org.apache.commons.vfs2.FileSystem;
 import org.wso2.org.apache.commons.vfs2.FileSystemException;
 import org.wso2.org.apache.commons.vfs2.provider.AbstractFileObject;
+import org.wso2.org.apache.commons.vfs2.provider.Fault;
 import org.wso2.org.apache.commons.vfs2.provider.MoveOptions;
 import org.wso2.org.apache.commons.vfs2.provider.MovePhase;
 import org.wso2.org.apache.commons.vfs2.provider.UnclearResultException;
@@ -169,6 +170,36 @@ class PostActionTest {
         Files.write(input, payload);
         assertNull(move.execute(session, generation, source(), identity(true), first, store));
         verify(session, times(2)).rememberFolder(eq(spec.parameter), eq(first.folderUri), any());
+    }
+
+    @ParameterizedTest
+    @CsvSource({"true", "false"})
+    void aMoveFolderThatAnotherWorkerMadeFirstCountsAsMade(boolean madeByOther) throws Exception {
+        MoveTargetSpec.Target target = spec.target("/a", "one.csv", 0);
+        FileObject parent = spy(session.resolve(target.parentUri, session.options(spec.parameter)));
+        // As on SFTP, the create fails when the folder is there.
+        doAnswer(call -> {
+            if (madeByOther) {
+                Files.createDirectory(archive.resolve("a"));
+            }
+            FileSystemException refused = new FileSystemException("Test folder create refused.");
+            refused.setFault(Fault.APPLICATION);
+            throw refused;
+        }).when(parent).createFolder();
+        doReturn(parent).when(session).resolve(eq(target.parentUri), any());
+        ActionResult result = new MoveAction(spec, config, health.namedLog()).execute(session, generation, source(),
+                identity(true), target, store);
+        verify(parent, times(1)).createFolder();
+        if (madeByOther) {
+            assertNull(result);
+            assertArrayEquals(payload, Files.readAllBytes(archive.resolve("a/one.csv")));
+            assertFalse(Files.exists(input));
+        } else {
+            assertNotNull(result);
+            assertEquals(ActionResult.Step.NONE, result.step);
+            assertTrue(result.clear);
+            assertArrayEquals(payload, Files.readAllBytes(input));
+        }
     }
 
     @Test
