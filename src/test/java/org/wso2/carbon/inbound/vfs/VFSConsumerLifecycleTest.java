@@ -127,6 +127,7 @@ class VFSConsumerLifecycleTest {
         p.setProperty("transport.vfs.FailedRecordsFileName", "list");
         p.setProperty("transport.vfs.FailedRecordsFileDestination", root.resolve("prefix").toString());
         p.setProperty(VFSConstants.TRANSPORT_FAILED_RECORD_TIMESTAMP_FORMAT, "yyyy");
+        p.setProperty("transport.vfs.StopTimeout", "1");
         Path path = Files.write(root.resolve("prefixlist"), new byte[]{42});
         String name = UUID.randomUUID().toString();
         Logger logger = Logger.getLogger(EndpointHealth.class.getName());
@@ -153,9 +154,10 @@ class VFSConsumerLifecycleTest {
             EndpointHealth health = field(consumer, "health", EndpointHealth.class);
             Lifecycle life = field(consumer, "lifecycle", Lifecycle.class);
             assertEquals(EndpointHealth.State.PAUSED, health.state());
+            // The stop ends its bound with the poll still out, so the store is kept for the resume.
             Generation first = life.enterPoll();
-            life.exitPoll(first);
             consumer.destroy();
+            life.exitPoll(first);
             consumer.resume();
             Generation next = life.enterPoll();
             assertNotSame(first.pollSession, next.pollSession);
@@ -194,6 +196,27 @@ class VFSConsumerLifecycleTest {
             FailStateStore next = FailStateStore.forEndpoint(name, new FailStateStore.Parameters(), null, health);
             assertNotSame(store, next);
             FailStateStore.release(name, next);
+        } finally {
+            HealthRegistry.unregister(HealthRegistry.Kind.INBOUND, name);
+        }
+    }
+
+    @Test
+    void aResumeAfterAReleaseUsesTheStoreThatIsRegisteredForTheName() throws Exception {
+        Properties p = new Properties();
+        p.setProperty("transport.vfs.FileURI", root.toUri().toString());
+        String name = UUID.randomUUID().toString();
+        try {
+            VFSConsumer consumer = new VFSConsumer(p, name, null, 10, "main", null, false, true);
+            EndpointHealth health = field(consumer, "health", EndpointHealth.class);
+            Lifecycle life = field(consumer, "lifecycle", Lifecycle.class);
+            life.exitPoll(life.enterPoll());
+            consumer.destroy();
+            consumer.resume();
+            life.exitPoll(life.enterPoll());
+            assertSame(FailStateStore.forEndpoint(name, new FailStateStore.Parameters(), null, health),
+                    field(consumer, "store", FailStateStore.class));
+            consumer.destroy();
         } finally {
             HealthRegistry.unregister(HealthRegistry.Kind.INBOUND, name);
         }

@@ -144,8 +144,9 @@ public class Lifecycle implements EndpointHealth.RuntimeMetrics {
                 .append("\tinFlight=").append(generation.inFlight);
     }
 
-    // True when the lifecycle is stopped and nothing of the drained generation is still out, so no task can hand the
-    // fail state store a new write any more.
+    // True when the lifecycle is stopped and nothing of the drained generation is still out. A task of an older
+    // generation was retired before, and a retired task returns before every call to the fail state store, so then
+    // no task can hand the store a new write any more.
     public synchronized boolean stoppedWithNoWork() {
         return state == State.STOPPED && (drain == null || !drain.generation.hasWork());
     }

@@ -130,10 +130,9 @@ public class VFSConsumer extends GenericPollingConsumer {
                 String root = Utils.extractPath(Utils.stripVfsSchemeIfPresent(vfsConfig.getFileURI()));
                 parameters.moveAfterFailedMove = id -> fallbackTarget(fallback, root, id.uri);
             }
-            // A resume keeps the store of this consumer, with its pending writes, also after a release.
-            if (store == null) {
-                store = FailStateStore.forEndpoint(name, parameters, newLocks, health);
-            }
+            // Looked up by name at each generation: a kept store comes back with its pending writes, and after a
+            // release the consumer uses the new registered store.
+            store = FailStateStore.forEndpoint(name, parameters, newLocks, health);
             locks = newLocks;
             cycle = new PollCycle(new FileTask.Services(name, vfsConfig, locks, store, readErrors, inject,
                     moveTargets, health), scanInterval, sequenceName);
