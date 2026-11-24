@@ -15,6 +15,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.wso2.carbon.inbound.vfs.conn.VfsSession;
 import org.wso2.org.apache.commons.vfs2.FileObject;
 import org.wso2.org.apache.commons.vfs2.FileSystemException;
+import org.wso2.org.apache.commons.vfs2.provider.Fault;
 import org.wso2.org.apache.commons.vfs2.util.TestPoints;
 import org.mockito.MockedStatic;
 import org.wso2.vfs.shared.health.HealthRegistry;
@@ -25,8 +26,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.Map;
 import java.util.Properties;
 import java.util.UUID;
@@ -345,6 +349,75 @@ class VFSConsumerPollTest {
             } finally {
                 close();
             }
+        }
+    }
+
+    // A listed name whose type read fails with a fault that is not transport, as the SMB2 share does for a name it
+    // refuses. The other files of the folder are still delivered and the refused name stays untouched.
+    @Test
+    void refusedChildTypeSkipsOnlyThatFileAndTransportStillLeavesThePoll() throws Exception {
+        Path first = write("a.xml", "<a/>", 1);
+        Path refused = write("refused.xml", "<refused/>", 1);
+        Path last = write("z.xml", "<z/>", 1);
+        // A name that the server refuses has no file under that name, as on SMB2. Its fail marker, here in the
+        // format of the old transport, must stay.
+        Path marker = write("ghost.xml.fail", "1795000000000", 1);
+        String uri = folder.toUri().toString();
+        AtomicReference<Fault> fault = new AtomicReference<>(Fault.APPLICATION);
+        setupSession = session -> doAnswer(call -> {
+            FileObject resolved = (FileObject) call.callRealMethod();
+            FileObject view = spy(resolved);
+            doAnswer(list -> {
+                FileObject[] children = resolved.getChildren();
+                for (int index = 0; index < children.length; index++) {
+                    if (children[index].getName().getBaseName().equals("refused.xml")) {
+                        FileObject child = spy(children[index]);
+                        FileSystemException problem = new FileSystemException("The type fixture refused the name.");
+                        problem.setFault(fault.get());
+                        doThrow(problem).when(child).getType();
+                        children[index] = child;
+                    }
+                }
+                FileObject ghost = spy(resolved.resolveFile("ghost.xml"));
+                FileSystemException problem = new FileSystemException("The type fixture refused the name.");
+                problem.setFault(fault.get());
+                doThrow(problem).when(ghost).getType();
+                FileObject[] listed = Arrays.copyOf(children, children.length + 1);
+                listed[children.length] = ghost;
+                return listed;
+            }).when(view).getChildren();
+            return view;
+        }).when(session).resolve(eq(uri), any());
+        deploy(uri, true);
+        try (Logs logs = new Logs()) {
+            consumer.poll();
+            consumer.poll();
+            assertEquals(Set.of("/a.xml", "/z.xml"), new HashSet<>(deliveries));
+            assertEquals(2, deliveries.size());
+            assertFalse(Files.exists(first));
+            assertFalse(Files.exists(last));
+            assertEquals("<refused/>", Files.readString(refused));
+            // The refused names stay in the listing, so the sweep does not take the marker as an orphan.
+            assertTrue(Files.exists(marker));
+            // The same names fail on each poll. The repeat limit of the endpoint log keeps one warning per name.
+            List<String> warnings = logs.messages(Level.WARNING, endpoint, "Could not read the type of a listed file");
+            assertEquals(2, warnings.size());
+            assertEquals(1, warnings.stream().filter(line -> line.contains("refused.xml")).count());
+            assertEquals(1, warnings.stream().filter(line -> line.contains("ghost.xml")).count());
+        } finally {
+            close();
+        }
+
+        deliveries.clear();
+        Path waiting = write("c.xml", "<c/>", 1);
+        fault.set(Fault.TRANSPORT);
+        deploy(uri, true);
+        try (Logs logs = new Logs()) {
+            consumer.poll();
+            assertTrue(deliveries.isEmpty());
+            assertEquals("<c/>", Files.readString(waiting));
+            assertEquals("<refused/>", Files.readString(refused));
+            assertTrue(logs.messages(Level.WARNING, endpoint, "Could not read the type of a listed file").isEmpty());
         }
     }
 

@@ -338,7 +338,23 @@ public final class PollCycle {
             Set<String> folders = new HashSet<>();
             for (FileObject child : children) {
                 String name = child.getName().getBaseName();
-                FileType type = child.getType();
+                FileType type;
+                try {
+                    type = child.getType();
+                } catch (FileSystemException problem) {
+                    Classification failure = classify(problem);
+                    if (failure.getKind().isTransport()) {
+                        throw problem;
+                    }
+                    // One name that the server refuses must not stop the other files of the folder. The name stays
+                    // in the listing, so its lock and fail markers are not taken as orphans.
+                    services.log.warn("Could not read the type of a listed file. The file is skipped. "
+                            + child.getName().getURI());
+                    services.log.debug("The type read failed for " + child.getName().getURI() + ". "
+                            + failure.getStatusText());
+                    names.put(name, new FolderListing.Metadata(-1, 0));
+                    continue;
+                }
                 boolean directory = type == FileType.FOLDER;
                 FolderListing.Metadata entry = new FolderListing.Metadata(-1, 0);
                 if (type == FileType.FILE && (!reserved(name, false) || name.endsWith(".fail"))) {
