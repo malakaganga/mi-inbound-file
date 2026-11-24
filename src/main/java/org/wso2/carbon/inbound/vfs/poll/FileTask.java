@@ -44,6 +44,7 @@ import org.wso2.vfs.shared.failstate.FileIdentity;
 import org.wso2.vfs.shared.lock.FolderListing;
 import org.wso2.vfs.shared.lock.HeldLock;
 import org.wso2.vfs.shared.lock.LockIo;
+import org.wso2.vfs.shared.log.UriMask;
 import org.wso2.vfs.shared.write.TempCleanup;
 import org.wso2.vfs.shared.lock.LockOutcome;
 import org.wso2.vfs.shared.lock.ShareLock;
@@ -375,13 +376,17 @@ public final class FileTask {
         Map<String, Object> headers = new HashMap<>();
         headers.put(VFSConstants.FILE_NAME, source.getName().getBaseName());
         headers.put(VFSConstants.FILE_PATH, source.getName().getPath());
-        headers.put(VFSConstants.FILE_URI, source.getName().getURI());
+        // The addresses hold the password, as in the transport, unless the endpoint asks to mask it.
+        boolean mask = services.config.isMaskHeaderPassword();
+        String fileUri = source.getName().getURI();
+        headers.put(VFSConstants.FILE_URI, mask ? UriMask.mask(fileUri) : fileUri);
         headers.put(org.apache.synapse.commons.vfs.VFSConstants.FILE_LENGTH, identity.size);
         headers.put(org.apache.synapse.commons.vfs.VFSConstants.LAST_MODIFIED, identity.mtime);
         headers.put("RELATIVE_PATH", relative);
         headers.put(VFSConstants.APPEND, String.valueOf(services.config.isAppend()));
         if (services.config.getReplyFileURI() != null) {
-            headers.put(VFSConstants.REPLY_FILE_URI, services.config.getReplyFileURI());
+            String reply = services.config.getReplyFileURI();
+            headers.put(VFSConstants.REPLY_FILE_URI, mask ? UriMask.mask(reply) : reply);
         }
         if (services.config.getReplayFileName() != null) {
             headers.put(VFSConstants.REPLY_FILE_NAME, services.config.getReplayFileName());

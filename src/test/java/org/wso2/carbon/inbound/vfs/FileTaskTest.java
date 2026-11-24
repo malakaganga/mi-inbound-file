@@ -24,6 +24,7 @@ import org.apache.synapse.core.SynapseEnvironment;
 import org.apache.synapse.core.axis2.Axis2MessageContext;
 import org.apache.synapse.inbound.InboundEndpoint;
 import org.wso2.vfs.shared.failstate.FileIdentity;
+import org.wso2.org.apache.commons.vfs2.FileName;
 import org.wso2.org.apache.commons.vfs2.FileObject;
 import org.wso2.org.apache.commons.vfs2.FileSystemException;
 import org.wso2.org.apache.commons.vfs2.provider.Fault;
@@ -109,6 +110,10 @@ class FileTaskTest {
     String failureAction = "NONE";
     long retryMillis = 30000;
     final Properties destinations = new Properties();
+    // More endpoint parameters for one test.
+    final Properties extra = new Properties();
+    // The data file shows an address with a password, as a file on an SFTP server does.
+    boolean remoteName;
     boolean controlledOwner;
     boolean controlledResets;
     boolean rejectNextReset;
@@ -132,6 +137,7 @@ class FileTaskTest {
         properties.setProperty(VFSConstants.TRANSPORT_FILE_ACTION_AFTER_FAILURE, failureAction);
         properties.setProperty(VFSConstants.TRANSPORT_FAILED_RECORD_NEXT_RETRY_DURATION, Long.toString(retryMillis));
         properties.putAll(destinations);
+        properties.putAll(extra);
         config = new VFSConfig(properties);
         life = new Lifecycle(endpoint, health, number -> Collections.singletonList(session(number)), () -> stopMillis,
                 workers, this::session);
@@ -150,6 +156,9 @@ class FileTaskTest {
         VfsSession session = new VfsSession(endpoint, number, config, 1000, health.namedLog());
         if (controlledResets) {
             return resetSession(session);
+        }
+        if (remoteName) {
+            return remoteNameSession(session);
         }
         if (!controlledOwner) {
             return session;
@@ -179,6 +188,26 @@ class FileTaskTest {
             }).when(observed).resolve(anyString());
             return observed;
         }).when(wrapped).lockIo(anyString());
+        return wrapped;
+    }
+
+    private VfsSession remoteNameSession(VfsSession session) {
+        VfsSession wrapped = spy(session);
+        try {
+            doAnswer(call -> {
+                FileObject resolved = (FileObject) call.callRealMethod();
+                if (!file.toUri().toString().equals(call.getArgument(0))) {
+                    return resolved;
+                }
+                FileName shown = spy(resolved.getName());
+                doReturn("sftp://rig:secret-word@host/in/message.txt").when(shown).getURI();
+                FileObject named = spy(resolved);
+                doReturn(shown).when(named).getName();
+                return named;
+            }).when(wrapped).resolve(anyString(), any());
+        } catch (FileSystemException impossible) {
+            throw new AssertionError(impossible);
+        }
         return wrapped;
     }
 
@@ -471,6 +500,26 @@ class FileTaskTest {
             object.close();
         }
         verify(environment, times(4)).injectInbound(same(message), same(sequence), eq(true));
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void addressHeadersHoldThePasswordUnlessTheEndpointMasksIt(boolean mask) throws Exception {
+        remoteName = true;
+        extra.setProperty(VFSConstants.REPLY_FILE_URI, "sftp://reply:secret-word@127.0.0.1:1/replies");
+        extra.setProperty(VFSConstants.TRANSPORT_MASK_HEADER_PASSWORD, String.valueOf(mask));
+        start(0, 1000);
+        AtomicReference<Map<String, Object>> seen = new AtomicReference<>();
+        when(inject.invoke(any(), any(), anyMap(), any())).thenAnswer(call -> {
+            seen.set(new HashMap<>(call.<Map<String, Object>>getArgument(2)));
+            return true;
+        });
+        assertEquals(FileTask.Outcome.PROCESSED, admitted(file, "").processOnPoll(null, false));
+        // By default both addresses hold the password, as the transport has them.
+        assertEquals(mask ? "sftp://rig:***@host/in/message.txt" : "sftp://rig:secret-word@host/in/message.txt",
+                seen.get().get(VFSConstants.FILE_URI));
+        assertEquals(mask ? "sftp://reply:***@127.0.0.1:1/replies" : "sftp://reply:secret-word@127.0.0.1:1/replies",
+                seen.get().get(VFSConstants.REPLY_FILE_URI));
     }
 
     @Test

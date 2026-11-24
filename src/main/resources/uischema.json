@@ -400,6 +400,17 @@
           {
             "type": "attribute",
             "value": {
+              "name": "transport.vfs.MaskHeaderPassword",
+              "displayName": "Mask Header Password",
+              "inputType": "checkbox",
+              "defaultValue": false,
+              "required": "false",
+              "helpTip": "When true, the file address and the reply address in the transport headers show the password masked. By default they hold the password, as the transport does."
+            }
+          },
+          {
+            "type": "attribute",
+            "value": {
               "name": "transport.vfs.Append",
               "displayName": "Append",
               "inputType": "checkbox",

@@ -344,6 +344,17 @@ class VFSConfigTest {
         assertThrows(UnsupportedOperationException.class, () -> map.put(AVOID, "false"));
     }
 
+    @Test
+    void maskHeaderPasswordIsOffByDefaultAndRefusesAWrongValue() {
+        String key = PREFIX + "MaskHeaderPassword";
+        Properties p = properties();
+        assertFalse(new VFSConfig(p).isMaskHeaderPassword());
+        p.setProperty(key, "true");
+        assertTrue(new VFSConfig(p).isMaskHeaderPassword());
+        p.setProperty(key, "yes");
+        assertTrue(assertThrows(IllegalArgumentException.class, () -> new VFSConfig(p)).getMessage().contains(key));
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"SFTPSessionTimeout", "SFTPKeepAliveCount", "SFTPConnectTimeout", "FTPConnectTimeout",
             "FTPSocketTimeout", "FTPDataTimeout", "SMB2ReadTimeout", "SMB2WriteTimeout", "SMB2TransactTimeout",

@@ -176,6 +176,8 @@ public class VFSConstants {
      * Fully build the file
      */
     public static final String TRANSPORT_BUILD = "transport.vfs.Build";
+    // With true the file address and the reply address in the transport headers show the password masked.
+    public static final String TRANSPORT_MASK_HEADER_PASSWORD = "transport.vfs.MaskHeaderPassword";
 
     /**
      * Distributed Lock timeout
