@@ -1,5 +1,7 @@
 package org.wso2.carbon.inbound.vfs;
 
+import org.apache.axiom.om.OMOutputFormat;
+import org.apache.axis2.AxisFault;
 import org.apache.axis2.builder.ApplicationXMLBuilder;
 import org.apache.axis2.context.ConfigurationContext;
 import org.apache.axis2.context.MessageContext;
@@ -22,6 +24,7 @@ import org.wso2.vfs.shared.health.HealthRegistry;
 import org.wso2.vfs.shared.failstate.FailState;
 import org.wso2.vfs.shared.health.EndpointHealth;
 
+import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
@@ -922,6 +925,66 @@ class VFSConsumerPollTest {
         try (java.util.stream.Stream<Path> files = Files.walk(replies)) {
             assertEquals(1L, files.filter(Files::isRegularFile).count());
         }
+    }
+
+    @Test
+    void twoWorkersWaitForEachOtherOnOneFixedReplyName() throws Exception {
+        Path input = Files.createDirectory(folder.resolve("input"));
+        Files.writeString(input.resolve("a.xml"), "<receipt>a</receipt>");
+        Files.writeString(input.resolve("b.xml"), "<receipt>b</receipt>");
+        Path replies = Files.createDirectory(folder.resolve("replies"));
+        properties.setProperty(VFSConstants.REPLY_FILE_URI, replies.toUri().toString());
+        properties.setProperty("transport.vfs.WorkerPoolSize", "2");
+        CountDownLatch writing = new CountDownLatch(1);
+        CountDownLatch released = new CountDownLatch(1);
+        // The reply of a.xml holds the lock of response.xml inside its write until b.xml has started its reply.
+        ApplicationXMLFormatter held = new ApplicationXMLFormatter() {
+            @Override
+            public void writeTo(MessageContext context, OMOutputFormat format, OutputStream out, boolean preserve)
+                    throws AxisFault {
+                writing.countDown();
+                try {
+                    assertTrue(released.await(10, TimeUnit.SECONDS));
+                } catch (InterruptedException interrupted) {
+                    throw new AxisFault("Interrupted.", interrupted);
+                }
+                super.writeTo(context, format, out, preserve);
+            }
+        };
+        mediation = message -> {
+            MessageContext axis = message.getAxis2MessageContext();
+            Map<?, ?> headers = (Map<?, ?>) axis.getProperty(MessageContext.TRANSPORT_HEADERS);
+            InboundResponseSender sender = (InboundResponseSender)
+                    message.getProperty(InboundEndpointConstants.INBOUND_ENDPOINT_RESPONSE_WORKER);
+            if ("a.xml".equals(headers.get(VFSConstants.FILE_NAME))) {
+                axis.getConfigurationContext().getAxisConfiguration().addMessageFormatter("application/held", held);
+                axis.setProperty(org.apache.axis2.Constants.Configuration.MESSAGE_TYPE, "application/held");
+            } else {
+                axis.setProperty(org.apache.axis2.Constants.Configuration.MESSAGE_TYPE, "application/xml");
+                try {
+                    assertTrue(writing.await(10, TimeUnit.SECONDS));
+                } catch (InterruptedException interrupted) {
+                    throw new AssertionError(interrupted);
+                }
+                new Thread(() -> {
+                    try {
+                        Thread.sleep(500);
+                    } catch (InterruptedException ignored) {
+                        Thread.currentThread().interrupt();
+                    }
+                    released.countDown();
+                }).start();
+            }
+            sender.sendBack(message);
+        };
+        deploy(input.toUri().toString(), false);
+        consumer.poll();
+        assertEquals(2L, consumer.getHealth().get("filesDone"));
+        assertEquals(0L, consumer.getHealth().get("filesFailed"));
+        assertFalse(Files.exists(input.resolve("a.xml")));
+        assertFalse(Files.exists(input.resolve("b.xml")));
+        String body = Files.readString(replies.resolve("response.xml"));
+        assertTrue(body.contains("<receipt>b</receipt>"), body);
     }
 
     private Map<String, Object> sampleHealth(EndpointHealth health) throws Exception {

@@ -54,6 +54,10 @@ import static org.wso2.carbon.inbound.vfs.VFSConstants.REPLY_FILE_URI;
 
 public final class ReplySender implements InboundResponseSender {
 
+    // The lock wait of a write of the file connector: three tries, 5 s apart, so 10 s in all.
+    private static final int LOCK_TRIES = 3;
+    private static final long LOCK_GAP_MILLIS = 5000;
+
     private final Thread owner = Thread.currentThread();
     private final VFSConfig config;
     private final VfsSession session;
@@ -130,7 +134,7 @@ public final class ReplySender implements InboundResponseSender {
                     append(io, target, payload);
                 } else {
                     AtomicWriter.Result result = writer.write(io, target, CommitStep.Mode.OVERWRITE, payload,
-                            config.isFileLocking(), 1, 0);
+                            config.isFileLocking(), LOCK_TRIES, LOCK_GAP_MILLIS);
                     if (result.connectionLost()) {
                         if (result.outcome != AtomicWriter.Outcome.COMMITTED) {
                             throw lost();
@@ -159,8 +163,9 @@ public final class ReplySender implements InboundResponseSender {
     }
 
     private void append(LockIo io, String uri, AtomicWriter.Content payload) throws IOException {
-        LockOutcome lock = config.isFileLocking() ? locks.acquire(io, uri, ShareLock.Mode.WRITER, null)
-                : locks.enterLocalOnly(uri, 1, 0);
+        LockOutcome lock = config.isFileLocking()
+                ? locks.acquireWithWait(io, uri, ShareLock.Mode.WRITER, LOCK_TRIES, LOCK_GAP_MILLIS)
+                : locks.enterLocalOnly(uri, LOCK_TRIES, LOCK_GAP_MILLIS);
         if (lock.kind != LockOutcome.Kind.ACQUIRED) {
             if (lock.connectionLost() || lock.classification != null && lock.classification.getKind().isTransport()) {
                 throw lost();
