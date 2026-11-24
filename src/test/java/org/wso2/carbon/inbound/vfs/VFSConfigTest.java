@@ -715,6 +715,15 @@ class VFSConfigTest {
     }
 
     @ParameterizedTest
+    @ValueSource(strings = { "sftp://user:a^b{c}d|e\"f<g>h`i@host/in", "ftp://user:a#b@host:21/in",
+            "smb2://us^er:a}b@host/share/in" })
+    void acceptsAUserAndPasswordWithCharactersThatAUriRefuses(String location) {
+        Properties p = properties();
+        p.setProperty(URI_KEY, location);
+        assertEquals(location, new VFSConfig(p).getFileURI());
+    }
+
+    @ParameterizedTest
     @ValueSource(strings = { "transport.vfs.FileURI", "transport.vfs.MoveAfterProcess",
             "transport.vfs.MoveAfterFailure", "transport.vfs.MoveAfterFailedMove", "transport.vfs.ReplyFileURI" })
     void invalidUriNamesOnlyItsParameter(String key) {

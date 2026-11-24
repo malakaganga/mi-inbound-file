@@ -330,7 +330,9 @@ public final class VFSConfig {
         // Check only the authority. Keep the configured path and its escapes unchanged.
         int end = rest.indexOf('/', 2);
         String authority = rest.substring(2, end < 0 ? rest.length() : end);
-        String checkedAuthority = authority.replace('_', 'x').replace(" ", "%20");
+        // User and password are not checked: VFS takes characters there that a java.net.URI refuses.
+        String checkedAuthority = authority.substring(authority.lastIndexOf('@') + 1).replace('_', 'x')
+                .replace(" ", "%20");
         URI server = new URI(scheme + "://" + checkedAuthority).parseServerAuthority();
         if (server.getHost() == null || server.getRawFragment() != null || authority.endsWith(":")
                 || server.getPort() > 65535) {
