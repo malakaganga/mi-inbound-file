@@ -240,8 +240,10 @@ public class VFSConsumer extends GenericPollingConsumer {
         lifecycle.stop("destroy");
         // The next deploy of this name in the same class loader then builds a new store with its new values. The
         // store stays while a worker is still out or a write is pending, so no file is processed twice.
-        if (store != null && lifecycle.stoppedWithNoWork()) {
-            FailStateStore.release(name, store);
-        }
+        lifecycle.whenStoppedWithNoWork(() -> {
+            if (store != null) {
+                FailStateStore.release(name, store);
+            }
+        });
     }
 }

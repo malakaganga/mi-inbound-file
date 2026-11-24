@@ -151,6 +151,14 @@ public class Lifecycle implements EndpointHealth.RuntimeMetrics {
         return state == State.STOPPED && (drain == null || !drain.generation.hasWork());
     }
 
+    // Runs the action only when the lifecycle is stopped with no work out, under the lock that a resume holds while it
+    // builds its generation and looks up the fail state store. So no resume comes between the check and the action.
+    public synchronized void whenStoppedWithNoWork(Runnable action) {
+        if (stoppedWithNoWork()) {
+            action.run();
+        }
+    }
+
     public synchronized Generation enterPoll() {
         if (state == State.STOPPED) {
             health.namedLog().warn("The endpoint was polled while it is stopped.");
