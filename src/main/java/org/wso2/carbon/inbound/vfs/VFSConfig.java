@@ -619,9 +619,8 @@ public final class VFSConfig {
         for (String key : new String[] { FORCE_CREATE_FOLDER, IS_MOUNTED, PREFIX + "AvoidPermissionCheck" }) {
             String value = merged.get(key);
             if (value != null) {
-                // CreateFolder and IsMounted are parameters of the released inbound, AvoidPermissionCheck is new.
-                boolean kind = key.equals(PREFIX + "AvoidPermissionCheck") ? NEW : RELEASED;
-                merged.put(key, String.valueOf(flag(key, value, false, kind)));
+                // CreateFolder and IsMounted come from the released inbound, AvoidPermissionCheck from 2.2.x.
+                merged.put(key, String.valueOf(flag(key, value, false, RELEASED)));
             }
         }
         String type = merged.get(FILE_TYPE);

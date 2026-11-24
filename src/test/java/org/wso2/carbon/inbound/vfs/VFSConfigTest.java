@@ -390,6 +390,8 @@ class VFSConfigTest {
             case "LockReleaseSameNode": return config.getLockStaleAge() == 900000;
             case "CreateFolder": return config.isForceCreateFolder();
             case "IsMounted": return Boolean.parseBoolean(config.getVfsSchemeProperties().get(PREFIX + "IsMounted"));
+            case "AvoidPermissionCheck":
+                return Boolean.parseBoolean(config.getVfsSchemeProperties().get(PREFIX + "AvoidPermissionCheck"));
             default: throw new AssertionError(name);
         }
     }
@@ -399,7 +401,7 @@ class VFSConfigTest {
     @ParameterizedTest
     @CsvSource({"Streaming,true", "Build,true", "Append,true", "FileSortAscending,true", "CheckSizeIgnoreEmpty,true",
             "UpdateLastModified,true", "AutoLockRelease,true", "LockReleaseSameNode,true", "CreateFolder,true",
-            "IsMounted,true", "MaskHeaderPassword,false", "AvoidPermissionCheck,false"})
+            "IsMounted,true", "AvoidPermissionCheck,true", "MaskHeaderPassword,false"})
     void aWrongBooleanIsFalseForAParameterOfBeforeAndRefusedForANewOne(String name, boolean released) {
         Properties p = properties();
         p.setProperty(PREFIX + "AutoLockReleaseInterval", "60000");
