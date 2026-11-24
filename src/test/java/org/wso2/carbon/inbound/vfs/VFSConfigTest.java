@@ -55,6 +55,7 @@ import java.util.Properties;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.logging.Handler;
+import java.util.logging.Level;
 import java.util.logging.LogRecord;
 import java.util.logging.Logger;
 import java.util.stream.Stream;
@@ -100,36 +101,36 @@ class VFSConfigTest {
                 row("FileNamePattern", VFSConfig::getFileNamePattern, null, ".+[.]csv", "[", ".+[.]csv"),
                 row("ReplyFileURI", VFSConfig::getReplyFileURI, null, "file:///tmp/replies", "sftp:///missing", "file:///tmp/replies"),
                 row("ReplyFileName", VFSConfig::getReplayFileName, "response.xml", "out.xml", null, "out.xml"),
-                row("Streaming", VFSConfig::isStreaming, "false", "true", "text", "true"),
-                row("Build", VFSConfig::isBuild, "false", "true", "text", "true"),
-                row("Append", VFSConfig::isAppend, "false", "true", "text", "true"),
+                row("Streaming", VFSConfig::isStreaming, "false", "true", null, "true"),
+                row("Build", VFSConfig::isBuild, "false", "true", null, "true"),
+                row("Append", VFSConfig::isAppend, "false", "true", null, "true"),
                 row("FileProcessCount", VFSConfig::getFileProcessingCount, null, "3", "-1", "3"),
                 row("FileProcessInterval", VFSConfig::getFileProcessingInterval, null, "25", "wrong", "25"),
                 row("FileSortAttribute", VFSConfig::getFileSortParam, null, "Name", null, "Name"),
-                row("FileSortAscending", VFSConfig::isFileSortAscending, "true", "false", "x", "false"),
+                row("FileSortAscending", VFSConfig::isFileSortAscending, "true", "false", null, "false"),
                 row("WorkerPoolSize", VFSConfig::getWorkerPoolSize, "4", "2", "0", "2"),
                 row("FileSizeLimit", VFSConfig::getFileSizeLimit, "-1.0", "200.5", "NaN", "200.5"),
                 row("MinimumAge", VFSConfig::getMinimumAge, null, "6", "x", "6"),
                 row("MaximumAge", VFSConfig::getMaximumAge, null, "20", "x", "20"),
                 row("CheckSizeInterval", VFSConfig::getCheckSizeInterval, "0", "16", "-1", "16"),
-                row("CheckSizeIgnoreEmpty", VFSConfig::getCheckSizeIgnoreEmpty, "false", "true", "x", "true"),
+                row("CheckSizeIgnoreEmpty", VFSConfig::getCheckSizeIgnoreEmpty, "false", "true", null, "true"),
                 row("MaxReadTransportErrors", VFSConfig::getMaxReadTransportErrors, "3", "2", "0", "2"),
-                row("ActionAfterProcess", VFSConfig::getActionAfterProcess, "0", "MOVE", "x", "1"),
-                row("ActionAfterFailure", VFSConfig::getActionAfterFailure, "0", "NONE", "x", "2"),
+                row("ActionAfterProcess", VFSConfig::getActionAfterProcess, "0", "MOVE", null, "1"),
+                row("ActionAfterFailure", VFSConfig::getActionAfterFailure, "0", "NONE", null, "2"),
                 row("MoveAfterProcess", VFSConfig::getMoveAfterProcess, null, "sftp://host/done", "sftp:///x", "sftp://host/done"),
                 row("MoveAfterFailure", VFSConfig::getMoveAfterFailure, null, "ftp://host/failure", "ftp:///x", "ftp://host/failure"),
                 row("MoveAfterFailedMove", VFSConfig::getMoveAfterMoveFailure, null, "file:///tmp/fail", "broken", "file:///tmp/fail"),
                 row("MoveTimestampFormat", VFSConfig::getMoveTimestampPattern, null, "yyyyMMdd", "'", "yyyyMMdd"),
                 row("SubFolderTimestampFormat", VFSConfig::getSubfolderTimestamp, null, "yyyyMMdd", "'", "yyyyMMdd"),
-                row("CreateFolder", VFSConfig::isForceCreateFolder, "false", "true", "bad", "true"),
-                row("UpdateLastModified", VFSConfig::isUpdateLastModified, "true", "false", "x", "false"),
+                row("CreateFolder", VFSConfig::isForceCreateFolder, "false", "true", null, "true"),
+                row("UpdateLastModified", VFSConfig::isUpdateLastModified, "true", "false", null, "false"),
                 row("TempFolderName", VFSConfig::getTempFolderName, ".part", ".partial", null, ".partial"),
                 row("TempFileSuffix", VFSConfig::getTempFileSuffix, ".part", ".partial", null, ".partial"),
                 row("MaxRetryCount", VFSConfig::getMaxRetryCount, "3", "7", "-1", "7"),
                 row("ReconnectTimeout", VFSConfig::getReconnectTimeout, "30000", "999", "-1", "999000"),
                 row("StopTimeout", VFSConfig::getStopTimeout, "60000", "8", "bad", "8000"),
                 row("Locking", VFSConfig::isFileLocking, "true", "disable", null, "false"),
-                row("AutoLockRelease", VFSConfig::isAutoLockRelease, "true", "false", "bad", "false"),
+                row("AutoLockRelease", VFSConfig::isAutoLockRelease, "true", "false", null, "false"),
                 row("LockStaleAge", VFSConfig::getLockStaleAge, "900000", "86400000", "-2", "86400000"),
                 row("FailedRecordNextRetryDuration", VFSConfig::getFailedRecordNextRetryDuration, "30000", "250", "bad", "250"),
                 row("FailedRecordFlagAfterRetries", VFSConfig::getFailedRecordFlagAfterRetries, "12", "5", "0", "5"));
@@ -353,6 +354,121 @@ class VFSConfigTest {
         assertTrue(new VFSConfig(p).isMaskHeaderPassword());
         p.setProperty(key, "yes");
         assertTrue(assertThrows(IllegalArgumentException.class, () -> new VFSConfig(p)).getMessage().contains(key));
+    }
+
+    private static List<String> warnings(Runnable action) {
+        Logger logger = Logger.getLogger(VFSConfig.class.getName());
+        List<String> warnings = new ArrayList<>();
+        Handler handler = new Handler() {
+            public void publish(LogRecord record) {
+                if (record.getLevel() == Level.WARNING) {
+                    warnings.add(record.getMessage());
+                }
+            }
+            public void flush() { }
+            public void close() { }
+        };
+        logger.addHandler(handler);
+        try {
+            action.run();
+        } finally {
+            logger.removeHandler(handler);
+        }
+        return warnings;
+    }
+
+    private static boolean flagOf(VFSConfig config, String name) {
+        switch (name) {
+            case "Streaming": return config.isStreaming();
+            case "Build": return config.isBuild();
+            case "Append": return config.isAppend();
+            case "FileSortAscending": return config.isFileSortAscending();
+            case "CheckSizeIgnoreEmpty": return config.getCheckSizeIgnoreEmpty();
+            case "UpdateLastModified": return config.isUpdateLastModified();
+            case "AutoLockRelease": return config.isAutoLockRelease();
+            // With the deprecated release interval set, a release on the same node keeps the stale age at 900000 ms.
+            case "LockReleaseSameNode": return config.getLockStaleAge() == 900000;
+            case "CreateFolder": return config.isForceCreateFolder();
+            case "IsMounted": return Boolean.parseBoolean(config.getVfsSchemeProperties().get(PREFIX + "IsMounted"));
+            default: throw new AssertionError(name);
+        }
+    }
+
+    // A boolean of the released inbound or the transport reads any other text as false with one warning, as there.
+    // A boolean that is new in this inbound refuses it.
+    @ParameterizedTest
+    @CsvSource({"Streaming,true", "Build,true", "Append,true", "FileSortAscending,true", "CheckSizeIgnoreEmpty,true",
+            "UpdateLastModified,true", "AutoLockRelease,true", "LockReleaseSameNode,true", "CreateFolder,true",
+            "IsMounted,true", "MaskHeaderPassword,false", "AvoidPermissionCheck,false"})
+    void aWrongBooleanIsFalseForAParameterOfBeforeAndRefusedForANewOne(String name, boolean released) {
+        Properties p = properties();
+        p.setProperty(PREFIX + "AutoLockReleaseInterval", "60000");
+        p.setProperty(PREFIX + name, "yes");
+        if (!released) {
+            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () -> new VFSConfig(p));
+            assertTrue(failure.getMessage().contains(PREFIX + name), failure.getMessage());
+            return;
+        }
+        List<VFSConfig> made = new ArrayList<>();
+        List<String> warnings = warnings(() -> made.add(new VFSConfig(p)));
+        assertFalse(flagOf(made.get(0), name), name);
+        assertEquals(1, warnings.stream().filter(w -> w.contains(PREFIX + name
+                + " has the value 'yes', which is not true or false. It is read as false.")).count(),
+                warnings.toString());
+        p.setProperty(PREFIX + name, "TRUE");
+        assertTrue(flagOf(new VFSConfig(p), name), name);
+    }
+
+    // An action that is not MOVE, DELETE or NONE is DELETE with one warning, as in the released inbound and the
+    // transport.
+    @ParameterizedTest
+    @ValueSource(strings = {"ActionAfterProcess", "ActionAfterFailure"})
+    void anUnknownActionIsDeleteWithAWarning(String name) {
+        Properties p = properties();
+        p.setProperty(PREFIX + name, "ARCHIVE");
+        List<VFSConfig> made = new ArrayList<>();
+        List<String> warnings = warnings(() -> made.add(new VFSConfig(p)));
+        VFSConfig config = made.get(0);
+        assertEquals(VFSConfig.DELETE, name.endsWith("Process") ? config.getActionAfterProcess()
+                : config.getActionAfterFailure());
+        assertEquals(1, warnings.stream().filter(w -> w.contains(PREFIX + name
+                + " has the value 'ARCHIVE', which is not MOVE, DELETE or NONE. DELETE is taken.")).count(),
+                warnings.toString());
+    }
+
+    // The released inbound failed each file after the flow and the transport deleted it. The deploy fails instead.
+    @ParameterizedTest
+    @CsvSource({"ActionAfterProcess,MoveAfterProcess", "ActionAfterFailure,MoveAfterFailure"})
+    void moveWithNoTargetFailsTheDeployAndNamesBothParameters(String action, String target) {
+        Properties p = properties();
+        p.setProperty(PREFIX + action, "MOVE");
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () -> new VFSConfig(p));
+        assertEquals(PREFIX + action + " is MOVE and " + PREFIX + target + " is not set. Set " + PREFIX + target
+                + " or change " + PREFIX + action + ".", failure.getMessage());
+    }
+
+    // A pattern that does not compile still fails the deploy. The released inbound never took a file with it.
+    @Test
+    void aFileNamePatternThatDoesNotCompileFailsTheDeploy() {
+        Properties p = properties();
+        p.setProperty(PREFIX + "FileNamePattern", "*.xml");
+        IllegalArgumentException failure = assertThrows(IllegalArgumentException.class, () -> new VFSConfig(p));
+        assertEquals("Invalid value for " + PREFIX + "FileNamePattern.", failure.getMessage());
+    }
+
+    // A size limit of 0 keeps the meaning of the transport, only empty files, and says so at deploy.
+    @Test
+    void aFileSizeLimitOfZeroTakesOnlyEmptyFilesWithAWarning() {
+        Properties p = properties();
+        p.setProperty(PREFIX + "FileSizeLimit", "0");
+        List<VFSConfig> made = new ArrayList<>();
+        List<String> warnings = warnings(() -> made.add(new VFSConfig(p)));
+        assertEquals(0.0, made.get(0).getFileSizeLimit());
+        assertEquals(1, warnings.stream().filter(w -> w.contains(PREFIX
+                + "FileSizeLimit is 0, so only empty files are taken, as in the transport. Use -1 for no limit."))
+                .count(), warnings.toString());
+        p.setProperty(PREFIX + "FileSizeLimit", "-1");
+        assertTrue(warnings(() -> new VFSConfig(p)).stream().noneMatch(w -> w.contains("FileSizeLimit")));
     }
 
     @ParameterizedTest
@@ -692,8 +808,9 @@ class VFSConfigTest {
         assertEquals("true", config.getOptions(URI_KEY).get(key));
         assertEquals("false", config.getOptions(TARGET).get(key));
         assertTrue(config.isFileLocking());
+        // The released inbound read any other text as false.
         p.setProperty(key, "invalid");
-        assertTrue(assertThrows(IllegalArgumentException.class, () -> new VFSConfig(p)).getMessage().contains(key));
+        assertEquals("false", new VFSConfig(p).getOptions(URI_KEY).get(key));
     }
 
     @Test

@@ -159,9 +159,12 @@ public final class VFSConfig {
     private final File oldList;
     private final Map<String, Map<String, String>> options;
     private final Set<String> deprecated;
+    // Whether a boolean parameter is one of the released inbound or the transport, or new in this inbound.
+    private static final boolean RELEASED = true;
+    private static final boolean NEW = false;
 
     public VFSConfig(Properties properties) {
-        this(properties, null, flag(properties, "sequential", true));
+        this(properties, null, Boolean.parseBoolean(properties.getProperty("sequential", "true")));
     }
 
     VFSConfig(Properties properties, SynapseEnvironment environment, boolean sequential) {
@@ -176,36 +179,42 @@ public final class VFSConfig {
         replyFileName = p.getProperty(REPLY_FILE_NAME, DEFAULT_RESPONSE_FILE);
         contentType = p.getProperty(TRANSPORT_FILE_CONTENT_TYPE);
         fileNamePattern = pattern(p.getProperty(TRANSPORT_FILE_FILE_NAME_PATTERN));
-        streaming = flag(p, STREAMING, false);
-        build = flag(p, TRANSPORT_BUILD, false);
-        maskHeaderPassword = flag(p, TRANSPORT_MASK_HEADER_PASSWORD, false);
-        append = flag(p, APPEND, false);
+        streaming = flag(p, STREAMING, false, RELEASED);
+        build = flag(p, TRANSPORT_BUILD, false, RELEASED);
+        maskHeaderPassword = flag(p, TRANSPORT_MASK_HEADER_PASSWORD, false, NEW);
+        append = flag(p, APPEND, false, RELEASED);
         fileProcessingCount = integer(p, TRANSPORT_FILE_COUNT, null, 0);
         fileProcessingInterval = integer(p, TRANSPORT_FILE_INTERVAL, null, 0);
         fileSortParam = p.getProperty(FILE_SORT_PARAM);
-        fileSortAscending = flag(p, FILE_SORT_ORDER, true);
+        fileSortAscending = flag(p, FILE_SORT_ORDER, true, RELEASED);
         workerPoolSize = sequential ? 4 : integer(p, PREFIX + "WorkerPoolSize", 4, 1);
         fileSizeLimit = sizeLimit(p);
+        if (fileSizeLimit == 0) {
+            diagnostics.warn(TRANSPORT_FILE_SIZE_LIMIT + " is 0, so only empty files are taken, as in the transport."
+                    + " Use -1 for no limit.");
+        }
         minimumAge = number(p, TRANSPORT_FILE_MINIMUM_AGE, null, 0);
         maximumAge = number(p, TRANSPORT_FILE_MAXIMUM_AGE, null, 0);
         checkSizeInterval = number(p, TRANSPORT_CHECK_SIZE_INTERVAL, 0L, 0);
-        checkSizeIgnoreEmpty = flag(p, TRANSPORT_CHECK_SIZE_IGNORE_EMPTY, false);
+        checkSizeIgnoreEmpty = flag(p, TRANSPORT_CHECK_SIZE_IGNORE_EMPTY, false, RELEASED);
         maxReadTransportErrors = integer(p, PREFIX + "MaxReadTransportErrors", 3, 1);
         actionAfterProcess = action(p, TRANSPORT_FILE_ACTION_AFTER_PROCESS);
         actionAfterFailure = action(p, TRANSPORT_FILE_ACTION_AFTER_FAILURE);
+        moveTarget(p, TRANSPORT_FILE_ACTION_AFTER_PROCESS, actionAfterProcess, TRANSPORT_FILE_MOVE_AFTER_PROCESS);
+        moveTarget(p, TRANSPORT_FILE_ACTION_AFTER_FAILURE, actionAfterFailure, TRANSPORT_FILE_MOVE_AFTER_FAILURE);
         moveAfterProcess = uri(p, TRANSPORT_FILE_MOVE_AFTER_PROCESS, actionAfterProcess == MOVE);
         moveAfterFailure = uri(p, TRANSPORT_FILE_MOVE_AFTER_FAILURE, actionAfterFailure == MOVE);
         moveAfterFailedMove = uri(p, TRANSPORT_FILE_MOVE_AFTER_FAILED_MOVE, false);
         moveTimestamp = datePattern(p, TRANSPORT_FILE_MOVE_TIMESTAMP_FORMAT);
         subfolderTimestamp = datePattern(p, SUBFOLDER_TIMESTAMP);
-        updateLastModified = flag(p, UPDATE_LAST_MODIFIED, true);
+        updateLastModified = flag(p, UPDATE_LAST_MODIFIED, true, RELEASED);
         tempFolderName = tempName(p, PREFIX + "TempFolderName", false);
         tempFileSuffix = tempName(p, PREFIX + "TempFileSuffix", true);
         maxRetryCount = integer(p, MAX_RETRY_COUNT, DEFAULT_MAX_RETRY_COUNT, 0);
         reconnectTimeout = timeout(p, RECONNECT_TIMEOUT, DEFAULT_RECONNECT_TIMEOUT, true);
         stopTimeout = timeout(p, PREFIX + "StopTimeout", 60000, false);
         fileLocking = !TRANSPORT_FILE_LOCKING_DISABLED.equalsIgnoreCase(p.getProperty(TRANSPORT_FILE_LOCKING));
-        autoLockRelease = flag(p, TRANSPORT_AUTO_LOCK_RELEASE, true);
+        autoLockRelease = flag(p, TRANSPORT_AUTO_LOCK_RELEASE, true, RELEASED);
         lockStaleAge = staleAge(p);
         retryMillis = number(p, TRANSPORT_FAILED_RECORD_NEXT_RETRY_DURATION, 30000L, 0);
         flagAfter = integer(p, PREFIX + "FailedRecordFlagAfterRetries", 12, 1);
@@ -426,18 +435,28 @@ public final class VFSConfig {
         throw invalid(TRANSPORT_FILE_SIZE_LIMIT);
     }
 
-    private static boolean flag(Properties p, String key, boolean fallback) {
-        String value = p.getProperty(key);
+    private boolean flag(Properties p, String key, boolean fallback, boolean released) {
+        return flag(key, p.getProperty(key), fallback, released);
+    }
+
+    // A boolean that the released inbound or the transport already had reads any other text as false, as there, with
+    // a warning. A boolean that is new in this inbound refuses it, because no endpoint of before can carry it.
+    private boolean flag(String key, String value, boolean fallback, boolean released) {
         if (value == null) {
             return fallback;
         }
         if ("true".equalsIgnoreCase(value) || "false".equalsIgnoreCase(value)) {
             return Boolean.parseBoolean(value);
         }
-        throw invalid(key);
+        if (!released) {
+            throw invalid(key);
+        }
+        diagnostics.warn(key + " has the value '" + value + "', which is not true or false. It is read as false.");
+        return false;
     }
 
-    private static int action(Properties p, String key) {
+    // The released inbound and the transport took any other text as DELETE.
+    private int action(Properties p, String key) {
         String value = p.getProperty(key, "DELETE");
         if ("MOVE".equalsIgnoreCase(value)) {
             return MOVE;
@@ -445,10 +464,21 @@ public final class VFSConfig {
         if ("NONE".equalsIgnoreCase(value)) {
             return NONE;
         }
-        if ("DELETE".equalsIgnoreCase(value)) {
-            return DELETE;
+        if (!"DELETE".equalsIgnoreCase(value)) {
+            diagnostics.warn(key + " has the value '" + value + "', which is not MOVE, DELETE or NONE."
+                    + " DELETE is taken.");
         }
-        throw invalid(key);
+        return DELETE;
+    }
+
+    // MOVE with no target fails the deploy. The released inbound failed each file after the flow and left it, and the
+    // transport deleted it. Neither comes back.
+    private static void moveTarget(Properties p, String action, int value, String target) {
+        String uri = p.getProperty(target);
+        if (value == MOVE && (uri == null || uri.trim().isEmpty())) {
+            throw new IllegalArgumentException(action + " is MOVE and " + target + " is not set. Set " + target
+                    + " or change " + action + ".");
+        }
     }
 
     private long timeout(Properties p, String key, long fallback, boolean reconnect) {
@@ -478,7 +508,7 @@ public final class VFSConfig {
     }
 
     private long staleAge(Properties p) {
-        boolean sameNode = flag(p, TRANSPORT_AUTO_LOCK_RELEASE_SAME_NODE, true);
+        boolean sameNode = flag(p, TRANSPORT_AUTO_LOCK_RELEASE_SAME_NODE, true, RELEASED);
         Long age = number(p, STALE_AGE, null, -1);
         if (age != null) {
             ignored(p, TRANSPORT_AUTO_LOCK_RELEASE_INTERVAL, STALE_AGE + " takes precedence.");
@@ -560,7 +590,7 @@ public final class VFSConfig {
         }
     }
 
-    private static void addOptions(Map<String, Map<String, String>> result, String name, String uri,
+    private void addOptions(Map<String, Map<String, String>> result, String name, String uri,
                                    Map<String, String> endpoint, boolean target) {
         if (uri == null) {
             return;
@@ -588,8 +618,10 @@ public final class VFSConfig {
         }
         for (String key : new String[] { FORCE_CREATE_FOLDER, IS_MOUNTED, PREFIX + "AvoidPermissionCheck" }) {
             String value = merged.get(key);
-            if (value != null && !"true".equalsIgnoreCase(value) && !"false".equalsIgnoreCase(value)) {
-                throw invalid(key);
+            if (value != null) {
+                // CreateFolder and IsMounted are parameters of the released inbound, AvoidPermissionCheck is new.
+                boolean kind = key.equals(PREFIX + "AvoidPermissionCheck") ? NEW : RELEASED;
+                merged.put(key, String.valueOf(flag(key, value, false, kind)));
             }
         }
         String type = merged.get(FILE_TYPE);
