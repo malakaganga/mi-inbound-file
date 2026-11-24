@@ -19,16 +19,12 @@
 package org.wso2.carbon.inbound.vfs;
 
 import com.hierynomus.msdtyp.AccessMask;
-import org.apache.commons.lang.WordUtils;
 import org.wso2.vfs.shared.log.NamedLog;
 import org.wso2.vfs.shared.log.RepeatLimiter;
-import org.wso2.vfs.shared.log.UriMask;
 import org.apache.commons.logging.LogFactory;
-import org.wso2.org.apache.commons.vfs2.FileObject;
 import org.wso2.org.apache.commons.vfs2.FileSystemException;
 import org.wso2.org.apache.commons.vfs2.FileSystemManager;
 import org.wso2.org.apache.commons.vfs2.FileSystemOptions;
-import org.wso2.org.apache.commons.vfs2.provider.UriParser;
 import org.wso2.org.apache.commons.vfs2.provider.ftp.FtpFileSystemConfigBuilder;
 import org.wso2.org.apache.commons.vfs2.provider.ftp.FtpFileType;
 import org.wso2.org.apache.commons.vfs2.provider.ftps.FtpsDataChannelProtectionLevel;
@@ -40,17 +36,11 @@ import org.wso2.org.apache.commons.vfs2.util.DelegatingFileSystemOptionsBuilder;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
-import java.net.InetAddress;
-import java.net.UnknownHostException;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Comparator;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Properties;
 import java.util.Set;
 import java.util.function.Consumer;
 
@@ -70,167 +60,6 @@ public class Utils {
 
     private static final NamedLog log = NamedLog.inbound(LogFactory.getLog(Utils.class), "Utils", new RepeatLimiter());
 
-    public static String maskURLPassword(String url) {
-        return UriMask.mask(url);
-    }
-
-    /**
-     * Function to resolve hostname of the vfs uri
-     *
-     * @param uri URI need to resolve
-     * @return hostname resolved uri
-     * @throws FileSystemException  Unable to decode due to malformed URI
-     * @throws UnknownHostException Error occurred while resolving hostname of URI
-     */
-    public static String resolveUriHost(String uri) throws FileSystemException, UnknownHostException {
-        return resolveUriHost(uri, new StringBuilder());
-    }
-
-    /**
-     * Function to resolve the hostname of uri to ip for following vfs protocols. if not the protocol listed, return
-     * same uri provided for {uri}
-     * Protocols resolved : SMB
-     *
-     * @param uri        URI need to resolve
-     * @param strBuilder string builder to use to build the resulting uri
-     * @return hostname resolved uri
-     * @throws FileSystemException  Unable to decode due to malformed URI
-     * @throws UnknownHostException Error occurred while resolving hostname of URI
-     */
-    public static String resolveUriHost(String uri, StringBuilder strBuilder)
-            throws FileSystemException, UnknownHostException {
-
-        if (uri != null && strBuilder != null) {
-            // Extract the scheme
-            String scheme = UriParser.extractScheme(uri, strBuilder);
-
-            //need to resolve hosts of smb URIs due to limitation in jcifs library
-            if (scheme != null && (scheme.equals("smb"))) {
-                // Expecting "//"
-                if (strBuilder.length() < 2 || strBuilder.charAt(0) != '/' || strBuilder.charAt(1) != '/') {
-                    throw new FileSystemException("vfs.provider/missing-double-slashes.error", uri);
-                }
-                strBuilder.delete(0, 2);
-
-                // Extract userinfo
-                String userInfo = extractUserInfo(strBuilder);
-
-                // Extract hostname
-                String hostName = extractHostName(strBuilder);
-
-                //resolve host name
-                InetAddress hostAddress = InetAddress.getByName(hostName);
-                String resolvedHostAddress = hostAddress.getHostAddress();
-
-                //build resolved uri
-                StringBuilder uriStrBuilder = new StringBuilder();
-                uriStrBuilder.append(scheme).append("://");
-
-                if (userInfo != null) {
-                    //user information can be null since it's optional
-                    uriStrBuilder.append(userInfo).append("@");
-                }
-
-                uriStrBuilder.append(resolvedHostAddress).append(strBuilder);
-
-                return uriStrBuilder.toString();
-            }
-        }
-
-        return uri;
-    }
-
-    /**
-     * Extracts the hostname from a URI.  The scheme://userinfo@ part has
-     * been removed.
-     * extracted hostname will be removed from the StringBuilder
-     */
-    private static String extractHostName(StringBuilder name) {
-        final int maxlen = name.length();
-        int pos = 0;
-        for (; pos < maxlen; pos++) {
-            char ch = name.charAt(pos);
-            //if /;?:@&=+$, characters found means, we have passed the hostname, hence break
-            if (ch == '/' || ch == ';' || ch == '?' || ch == ':'
-                    || ch == '@' || ch == '&' || ch == '=' || ch == '+'
-                    || ch == '$' || ch == ',') {
-                break;
-            }
-        }
-        if (pos == 0) {
-            //haven't found the hostname
-            return null;
-        }
-
-        String hostname = name.substring(0, pos);
-        name.delete(0, pos);
-        return hostname;
-    }
-
-    /**
-     * Extracts the user info from a URI.  The scheme:// part has been removed
-     * already.
-     * extracted user info will be removed from the StringBuilder
-     */
-    private static String extractUserInfo(StringBuilder name) {
-        int maxlen = name.length();
-        for (int pos = 0; pos < maxlen; pos++) {
-            char ch = name.charAt(pos);
-            if (ch == '@') {
-                // Found the end of the user info
-                String userInfo = name.substring(0, pos);
-                name.delete(0, pos + 1);
-                return userInfo;
-            }
-            if (ch == '/' || ch == '?') {
-                // Not allowed in user info
-                break;
-            }
-        }
-
-        // Not found
-        return null;
-    }
-
-    public static String decode(String encodedStr) throws FileSystemException {
-        if (encodedStr == null) {
-            return null;
-        } else if (encodedStr.indexOf(37) < 0) {
-            return encodedStr;
-        } else {
-            StringBuilder buffer = new StringBuilder(encodedStr);
-            decode(buffer, 0, buffer.length());
-            return buffer.toString();
-        }
-    }
-
-    public static void decode(StringBuilder buffer, int offset, int length) throws FileSystemException {
-        int index = offset;
-
-        for (int count = length; count > 0; ++index) {
-            char ch = buffer.charAt(index);
-            if (ch == '%') {
-                if (count < 3) {
-                    throw new FileSystemException("vfs.provider/invalid-escape-sequence.error", buffer.substring(index, index + count));
-                }
-
-                int dig1 = Character.digit(buffer.charAt(index + 1), 16);
-                int dig2 = Character.digit(buffer.charAt(index + 2), 16);
-                if (dig1 == -1 || dig2 == -1) {
-                    throw new FileSystemException("vfs.provider/invalid-escape-sequence.error", buffer.substring(index, index + 3));
-                }
-
-                char value = (char) (dig1 << 4 | dig2);
-                buffer.setCharAt(index, value);
-                buffer.delete(index + 1, index + 3);
-                count -= 2;
-            }
-
-            --count;
-        }
-    }
-
-
     public static boolean supportsSubDirectoryToken(String original) {
         String[] parts = original.split("\\?");
         // Either '/*' or '\*' before query string
@@ -242,42 +71,6 @@ public class Utils {
         String[] parts = original.split("\\?");
         parts[0] = parts[0].substring(0, parts[0].length() - INCLUDE_SUB_DIR_SYMBOL_LENGTH);
         return parts.length == 1 ? parts[0] : parts[0] + "?" + parts[1];
-    }
-
-    public static FileObject[] sortFileObjects(FileObject[] children, String strSortParam, VFSConfig vfsProperties) {
-        if (strSortParam != null && !"NONE".equals(strSortParam)) {
-            log.debug("Start Sorting the files.");
-            boolean strSortOrder = vfsProperties.isFileSortAscending();
-            if (log.isDebugEnabled()) {
-                log.debug("Sorting the files by : " + strSortOrder + ". (" + strSortOrder + ")");
-            }
-            if (strSortParam.equals(VFSConstants.FILE_SORT_VALUE_NAME) && strSortOrder) {
-                Arrays.sort(children, new FileNameAscComparator());
-            } else if (strSortParam.equals(VFSConstants.FILE_SORT_VALUE_NAME)) {
-                Arrays.sort(children, new FileNameDesComparator());
-            } else if (strSortParam.equals(VFSConstants.FILE_SORT_VALUE_SIZE) && strSortOrder) {
-                Arrays.sort(children, new FileSizeAscComparator());
-            } else if (strSortParam.equals(VFSConstants.FILE_SORT_VALUE_SIZE)) {
-                Arrays.sort(children, new FileSizeDesComparator());
-            } else if (strSortParam.equals(VFSConstants.FILE_SORT_VALUE_LASTMODIFIEDTIMESTAMP)
-                    && strSortOrder) {
-                Arrays.sort(children, new FileLastmodifiedtimestampAscComparator());
-            } else if (strSortParam.equals(VFSConstants.FILE_SORT_VALUE_LASTMODIFIEDTIMESTAMP)) {
-                Arrays.sort(children, new FileLastmodifiedtimestampDesComparator());
-            }
-            log.debug("End Sorting the files.");
-        }
-        return children;
-    }
-
-    public static String getFullPath(FileObject fo) {
-        String fullPath = fo.getName().getURI();
-        int pos = fullPath.indexOf(63);
-        if (pos != -1) {
-            fullPath = fullPath.substring(0, pos);
-        }
-
-        return fullPath;
     }
 
     public static FileSystemOptions attachFileSystemOptions(Map<String, String> options, FileSystemManager fsManager) throws FileSystemException {
@@ -426,10 +219,6 @@ public class Utils {
         }
     }
 
-    public static ArrayList<String> validateAndGetDiskShareAccessMask(String diskShareAccessMask) {
-        return validateAndGetDiskShareAccessMask(diskShareAccessMask, log);
-    }
-
     private static ArrayList<String> validateAndGetDiskShareAccessMask(String diskShareAccessMask, NamedLog log) {
         // Prepare the set of allowed access mask values
         Set<String> allowedValues = new HashSet<String>();
@@ -482,107 +271,5 @@ public class Utils {
         StringWriter trace = new StringWriter();
         error.printStackTrace(new PrintWriter(trace));
         return text + System.lineSeparator() + trace.toString().trim();
-    }
-
-    public static Map<String, String> parseSchemeFileOptions(String fileURI, Properties vfsProperties) {
-        String scheme = UriParser.extractScheme(fileURI);
-        if (scheme == null) {
-            return null;
-        } else {
-            Map<String, String> schemeFileOptions = parseSchemeFileOptions(scheme, fileURI);
-            addOptions(schemeFileOptions, vfsProperties);
-            return schemeFileOptions;
-        }
-    }
-
-    private static Map<String, String> parseSchemeFileOptions(String scheme, String fileURI) {
-        HashMap<String, String> schemeFileOptions = new HashMap<>();
-        schemeFileOptions.put(VFSConstants.SCHEME, scheme);
-        try {
-            Map<String, String> queryParams = UriParser.extractQueryParams(fileURI);
-            schemeFileOptions.putAll(queryParams);
-        } catch (FileSystemException e) {
-            log.error("Error while loading scheme query params " + e.getMessage());
-        }
-        return schemeFileOptions;
-    }
-
-    private static void addOptions(Map<String, String> schemeFileOptions, Properties vfsProperties) {
-        for (VFSConstants.SFTP_FILE_OPTION option : VFSConstants.SFTP_FILE_OPTION.values()) {
-            String paramValue = vfsProperties.getProperty(
-                    VFSConstants.SFTP_PREFIX + WordUtils.capitalize(option.toString()));
-            if (paramValue != null && !paramValue.isEmpty()) {
-                schemeFileOptions.put(option.toString(), paramValue);
-            }
-        }
-    }
-
-    /**
-     * Comparator classed used to sort the files according to user input
-     */
-    public static class FileNameAscComparator implements Comparator<FileObject> {
-        @Override
-        public int compare(FileObject o1, FileObject o2) {
-            return o1.getName().compareTo(o2.getName());
-        }
-    }
-
-    static class FileLastmodifiedtimestampAscComparator implements Comparator<FileObject> {
-        @Override
-        public int compare(FileObject o1, FileObject o2) {
-            Long lDiff = 0L;
-            try {
-                lDiff = o1.getContent().getLastModifiedTime() - o2.getContent().getLastModifiedTime();
-            } catch (FileSystemException e) {
-                log.warn("Unable to compare lastmodified timestamp of the two files. " + e.getMessage());
-            }
-            return lDiff.intValue();
-        }
-    }
-
-    static class FileSizeAscComparator implements Comparator<FileObject> {
-        @Override
-        public int compare(FileObject o1, FileObject o2) {
-            Long lDiff = 0L;
-            try {
-                lDiff = o1.getContent().getSize() - o2.getContent().getSize();
-            } catch (FileSystemException e) {
-                log.warn("Unable to compare size of the two files. " + e.getMessage());
-            }
-            return lDiff.intValue();
-        }
-    }
-
-    static class FileNameDesComparator implements Comparator<FileObject> {
-        @Override
-        public int compare(FileObject o1, FileObject o2) {
-            return o2.getName().compareTo(o1.getName());
-        }
-    }
-
-    static class FileLastmodifiedtimestampDesComparator implements Comparator<FileObject> {
-        @Override
-        public int compare(FileObject o1, FileObject o2) {
-            Long lDiff = 0L;
-            try {
-                lDiff = o2.getContent().getLastModifiedTime() - o1.getContent().getLastModifiedTime();
-            } catch (FileSystemException e) {
-                log.warn("Unable to compare lastmodified timestamp of the two files. " + e.getMessage());
-            }
-            return lDiff.intValue();
-        }
-    }
-
-    static class FileSizeDesComparator implements Comparator<FileObject> {
-        @Override
-        public int compare(FileObject o1, FileObject o2) {
-            Long lDiff = 0L;
-            try {
-                lDiff = o2.getContent().getSize() - o1.getContent().getSize();
-            } catch (FileSystemException e) {
-                log.warn("Unable to compare size of the two files. " + e.getMessage());
-            }
-            return lDiff.intValue();
-        }
     }
 }
