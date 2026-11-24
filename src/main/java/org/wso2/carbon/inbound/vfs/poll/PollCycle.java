@@ -604,7 +604,8 @@ public final class PollCycle {
 
         boolean missing() {
             workers.removeIf(worker -> {
-                if (!worker.isDone()) {
+                // A worker that failed stays in the list, and awaitWorkers reports it.
+                if (!worker.isDone() || worker.isCompletedExceptionally()) {
                     return false;
                 }
                 missingSequence |= worker.join() == FileTask.Outcome.MISSING_SEQUENCE;

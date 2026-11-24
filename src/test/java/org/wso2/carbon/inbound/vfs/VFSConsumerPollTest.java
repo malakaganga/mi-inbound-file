@@ -297,6 +297,30 @@ class VFSConsumerPollTest {
         }
     }
 
+    @Test
+    void aWorkerThatEndedWithAnErrorDoesNotStopThePoll() throws Exception {
+        write("a.xml", "<a/>", 2);
+        write("b.xml", "<b/>", 1);
+        properties.setProperty("transport.vfs.FileSortAttribute", "Name");
+        properties.setProperty("transport.vfs.WorkerPoolSize", "1");
+        deploy(folder.toUri().toString(), false);
+        mediation = message -> {
+            Map<?, ?> headers = (Map<?, ?>) message.getAxis2MessageContext()
+                    .getProperty(MessageContext.TRANSPORT_HEADERS);
+            if ("a.xml".equals(headers.get(VFSConstants.FILE_NAME))) {
+                throw new NoClassDefFoundError("Test worker error.");
+            }
+        };
+        try (Logs logs = new Logs()) {
+            consumer.poll();
+            assertEquals(List.of("/a.xml", "/b.xml"), deliveries);
+            assertTrue(Files.exists(folder.resolve("a.xml")));
+            assertFalse(Files.exists(folder.resolve("b.xml")));
+            assertTrue(logs.messages(Level.SEVERE, endpoint, "Poll failed").isEmpty());
+            assertEquals(1, logs.messages(Level.SEVERE, endpoint, "A file worker failed").size());
+        }
+    }
+
     // A temp name of a cut copy, as the shared module builds it: the target name, the creation second and a random
     // part, each 7 base 36 digits, and the suffix.
     private static String tempName(String target, long createdSeconds) {
