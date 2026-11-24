@@ -122,7 +122,7 @@
               "inputType": "string",
               "defaultValue": "",
               "required": "true",
-              "helpTip": "The interval for the connection.",
+              "helpTip": "The time between two polls, in milliseconds.",
               "enableCondition": [
                 {
                   "scheduleType": "Polling"
@@ -454,7 +454,8 @@
               "displayName": "Reconnect Timeout",
               "inputType": "string",
               "defaultValue": "30s",
-              "required": "false"
+              "required": "false",
+              "helpTip": "The wait between two tries to reach the polled folder after a failure. A bare number below 1000 is in seconds, a bare number of 1000 or more is in milliseconds, and the suffix s or ms is taken as written."
             }
           },
           {
@@ -464,7 +465,8 @@
               "displayName": "Failed Record Next Retry Duration",
               "inputType": "string",
               "defaultValue": "30000",
-              "required": "false"
+              "required": "false",
+              "helpTip": "The first wait before a failed post action is tried again, in milliseconds. It doubles at each try up to 30 minutes."
             }
           },
           {
@@ -544,7 +546,8 @@
               "displayName": "Stop Timeout",
               "inputType": "string",
               "required": "false",
-              "defaultValue": "60s"
+              "defaultValue": "60s",
+              "helpTip": "The longest wait for the files in flight at undeploy, deactivate and handover. A bare number is in seconds. The suffix ms gives milliseconds."
             }
           },
           {
@@ -554,7 +557,8 @@
               "displayName": "Lock Stale Age",
               "inputType": "string",
               "required": "false",
-              "defaultValue": ""
+              "defaultValue": "",
+              "helpTip": "The age after which a lock counts as stale, in milliseconds. -1 means never. A value below 60000 is raised to 60000."
             }
           },
           {
@@ -791,7 +795,8 @@
               "displayName": "SFTPSession Timeout",
               "inputType": "string",
               "required": "false",
-              "defaultValue": ""
+              "defaultValue": "",
+              "helpTip": "The SFTP session timeout, in milliseconds."
             }
           },
           {
@@ -811,7 +816,8 @@
               "displayName": "SFTPConnect Timeout",
               "inputType": "string",
               "required": "false",
-              "defaultValue": ""
+              "defaultValue": "",
+              "helpTip": "The bound of the SFTP connect, in milliseconds."
             }
           },
           {
@@ -821,7 +827,8 @@
               "displayName": "FTPConnect Timeout",
               "inputType": "string",
               "required": "false",
-              "defaultValue": ""
+              "defaultValue": "",
+              "helpTip": "The bound of the FTP connect, in milliseconds."
             }
           },
           {
@@ -831,7 +838,8 @@
               "displayName": "FTPSocket Timeout",
               "inputType": "string",
               "required": "false",
-              "defaultValue": ""
+              "defaultValue": "",
+              "helpTip": "The read timeout of the FTP control connection, in milliseconds."
             }
           },
           {
@@ -841,7 +849,8 @@
               "displayName": "FTPData Timeout",
               "inputType": "string",
               "required": "false",
-              "defaultValue": ""
+              "defaultValue": "",
+              "helpTip": "The read timeout of an FTP data connection, in milliseconds."
             }
           },
           {
@@ -851,7 +860,8 @@
               "displayName": "SMB2Read Timeout",
               "inputType": "string",
               "required": "false",
-              "defaultValue": ""
+              "defaultValue": "",
+              "helpTip": "The SMB2 read timeout, in milliseconds."
             }
           },
           {
@@ -861,7 +871,8 @@
               "displayName": "SMB2Write Timeout",
               "inputType": "string",
               "required": "false",
-              "defaultValue": ""
+              "defaultValue": "",
+              "helpTip": "The SMB2 write timeout, in milliseconds."
             }
           },
           {
@@ -871,7 +882,8 @@
               "displayName": "SMB2Transact Timeout",
               "inputType": "string",
               "required": "false",
-              "defaultValue": ""
+              "defaultValue": "",
+              "helpTip": "The SMB2 transact timeout, in milliseconds."
             }
           },
           {
@@ -881,7 +893,8 @@
               "displayName": "Write Stall Timeout",
               "inputType": "string",
               "required": "false",
-              "defaultValue": ""
+              "defaultValue": "",
+              "helpTip": "The longest time a write may make no progress, in milliseconds. 0 turns the check off."
             }
           },
           {
