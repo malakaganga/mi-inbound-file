@@ -43,6 +43,7 @@ public final class MoveTargetSpec {
     private final String path;
     private final String query;
     private final String datePattern;
+    private final String datedPrefix;
     private final String prefixPattern;
 
     public static MoveTargetSpec from(String parameter, String uri, VFSConfig config, NamedLog log) {
@@ -54,7 +55,7 @@ public final class MoveTargetSpec {
         String location = Utils.stripVfsSchemeIfPresent(uri);
         String folder = Utils.extractPath(location);
         query = location.substring(folder.length());
-        path = folder.endsWith("/*") || folder.endsWith("\\*") ? folder.substring(0, folder.length() - 1) : folder;
+        String base = folder.endsWith("/*") || folder.endsWith("\\*") ? folder.substring(0, folder.length() - 1) : folder;
         Map<String, String> options = config.getOptions(parameter);
         createFolder = Boolean.parseBoolean(options.get(FORCE_CREATE_FOLDER));
         try {
@@ -63,6 +64,17 @@ public final class MoveTargetSpec {
             throw new IllegalArgumentException("Invalid value for " + parameter + ".");
         }
         datePattern = TRANSPORT_FILE_MOVE_AFTER_PROCESS.equals(parameter) ? config.getSubfolderTimestamp() : null;
+        // As the transport, the date is added to the configured folder with no separator. When neither side has a
+        // slash, the dated folder is a sibling, so the paths of this target count from the parent folder.
+        String leaf = "";
+        if (datePattern != null && !base.endsWith("/") && !base.endsWith("\\")
+                && !new SimpleDateFormat(datePattern).format(new Date(0)).startsWith("/")) {
+            int slash = Math.max(base.lastIndexOf('/'), base.lastIndexOf('\\'));
+            leaf = base.substring(slash + 1);
+            base = base.substring(0, slash + 1);
+        }
+        path = base;
+        datedPrefix = leaf;
         prefixPattern = config.getMoveTimestampPattern();
         if (datePattern != null && !createFolder) {
             log.warn("SubFolderTimestampFormat is set with CreateFolder off. The dated move folder must exist.");
@@ -72,16 +84,21 @@ public final class MoveTargetSpec {
     /** relative is the encoded relative parent from the poll listing, including its leading slash. */
     public Target target(String relative, String baseName, long millis) {
         Date now = new Date(millis);
-        String dated = datePattern == null ? "" : new SimpleDateFormat(datePattern).format(now);
+        String dated = datePattern == null ? ""
+                : (datedPrefix + new SimpleDateFormat(datePattern).format(now)).replaceFirst("^/+", "");
         String name = prefixPattern == null ? baseName : new SimpleDateFormat(prefixPattern).format(now) + baseName;
         String parent = relative.isEmpty() ? dated : append(dated, relative.substring(1));
         return location(dated, parent, append(parent, name));
     }
 
-    /** A marker stores only the path below the configured move folder. */
+    /**
+     * A marker stores only the path below the configured move folder. When the date continues the folder name, it
+     * stores the path from the parent folder, and that path starts with the folder name.
+     */
     public Target recorded(String relative, String recordedPath) {
         if (recordedPath.isEmpty() || recordedPath.startsWith("/") || recordedPath.indexOf('?') >= 0
-                || recordedPath.indexOf('\\') >= 0 || hasSchemePrefix(recordedPath)) {
+                || recordedPath.indexOf('\\') >= 0 || hasSchemePrefix(recordedPath)
+                || !recordedPath.startsWith(encodeLeadingColon(datedPrefix))) {
             throw new IllegalArgumentException("Invalid recorded move target.");
         }
         for (String segment : recordedPath.split("/", -1)) {

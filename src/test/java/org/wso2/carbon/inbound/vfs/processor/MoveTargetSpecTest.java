@@ -64,6 +64,41 @@ class MoveTargetSpecTest {
             assertEquals("file:///done/prefix_bad.csv" + query, spec.target("", "bad.csv", 0).fileUri);
         }
     }
+
+    @Test
+    void addsTheDateToTheFolderWithNoSeparatorAndReadsTheRecordedPathBack() {
+        String[][] rows = {
+                {"file:///done", "'day'", "file:///doneday", "doneday"},
+                {"file:///done", "'/day'", "file:///done/day", "day"},
+                {"file:///done/", "'day'", "file:///done/day", "day"},
+                {"file:///done/", "'/day'", "file:///done/day", "day"},
+                {"file:///done/*", "'day'", "file:///done/day", "day"},
+        };
+        for (String[] row : rows) {
+            String uri = row[0] + "?x=1";
+            Properties settings = new Properties();
+            settings.setProperty(TRANSPORT_FILE_FILE_URI, "file:///in");
+            settings.setProperty(TRANSPORT_FILE_MOVE_AFTER_PROCESS, uri);
+            settings.setProperty("transport.vfs.SubFolderTimestampFormat", row[1]);
+            MoveTargetSpec spec = MoveTargetSpec.from(TRANSPORT_FILE_MOVE_AFTER_PROCESS, uri,
+                    new VFSConfig(settings), mock(NamedLog.class));
+            for (String relative : new String[] {"", "/sub"}) {
+                String label = row[0] + " " + row[1] + " " + relative;
+                MoveTargetSpec.Target target = spec.target(relative, "a.csv", 0);
+                assertEquals(row[2] + "?x=1", target.folderUri, label);
+                assertEquals(row[2] + relative + "/a.csv?x=1", target.fileUri, label);
+                assertEquals(row[3] + relative + "/a.csv", target.recordedPath, label);
+                MoveTargetSpec.Target recorded = spec.recorded(relative, target.recordedPath);
+                assertEquals(target.folderUri, recorded.folderUri, label);
+                assertEquals(target.parentUri, recorded.parentUri, label);
+                assertEquals(target.fileUri, recorded.fileUri, label);
+            }
+            if (row[3].startsWith("done")) {
+                // A marker can not name a folder next to the move folder that the date can not give.
+                assertThrows(IllegalArgumentException.class, () -> spec.recorded("", "other/a.csv"));
+            }
+        }
+    }
     @Test
     void keepsEncodedNamesRelativeAcrossMarkerReadback() {
         String destination = "file:///done?transport.vfs.CreateFolder=false";
