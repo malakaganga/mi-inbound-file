@@ -130,7 +130,10 @@ public class VFSConsumer extends GenericPollingConsumer {
                 String root = Utils.extractPath(Utils.stripVfsSchemeIfPresent(vfsConfig.getFileURI()));
                 parameters.moveAfterFailedMove = id -> fallbackTarget(fallback, root, id.uri);
             }
-            store = FailStateStore.forEndpoint(name, parameters, newLocks, health);
+            // A resume keeps the store of this consumer, with its pending writes, also after a release.
+            if (store == null) {
+                store = FailStateStore.forEndpoint(name, parameters, newLocks, health);
+            }
             locks = newLocks;
             cycle = new PollCycle(new FileTask.Services(name, vfsConfig, locks, store, readErrors, inject,
                     moveTargets, health), scanInterval, sequenceName);
@@ -236,5 +239,10 @@ public class VFSConsumer extends GenericPollingConsumer {
     @Override
     public void destroy() {
         lifecycle.stop("destroy");
+        // The next deploy of this name in the same class loader then builds a new store with its new values. The
+        // store stays while a worker is still out or a write is pending, so no file is processed twice.
+        if (store != null && lifecycle.stoppedWithNoWork()) {
+            FailStateStore.release(name, store);
+        }
     }
 }

@@ -23,6 +23,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.mockito.MockedStatic;
 import org.wso2.carbon.inbound.vfs.poll.Generation;
 import org.wso2.carbon.inbound.vfs.poll.Lifecycle;
+import org.wso2.vfs.shared.failstate.FailStateStore;
 import org.wso2.vfs.shared.health.EndpointHealth;
 import org.wso2.vfs.shared.health.HealthRegistry;
 
@@ -166,6 +167,34 @@ class VFSConsumerLifecycleTest {
             consumer.destroy();
         } finally {
             logger.removeHandler(handler);
+            HealthRegistry.unregister(HealthRegistry.Kind.INBOUND, name);
+        }
+    }
+
+    @Test
+    void destroyReleasesTheStoreOnlyWhenNoWorkIsLeft() throws Exception {
+        Properties p = new Properties();
+        p.setProperty("transport.vfs.FileURI", root.toUri().toString());
+        p.setProperty("transport.vfs.StopTimeout", "1");
+        String name = UUID.randomUUID().toString();
+        try {
+            VFSConsumer consumer = new VFSConsumer(p, name, null, 10, "main", null, false, true);
+            FailStateStore store = field(consumer, "store", FailStateStore.class);
+            EndpointHealth health = field(consumer, "health", EndpointHealth.class);
+            Lifecycle life = field(consumer, "lifecycle", Lifecycle.class);
+            Generation out = life.enterPoll();
+            // The stop bound ends with the poll still out, so the store stays for this name.
+            consumer.destroy();
+            assertSame(store, FailStateStore.forEndpoint(name, new FailStateStore.Parameters(), null, health));
+            life.exitPoll(out);
+            // A stop with no work left drops it, and the next deploy of the name gets a new store.
+            consumer.resume();
+            life.exitPoll(life.enterPoll());
+            consumer.destroy();
+            FailStateStore next = FailStateStore.forEndpoint(name, new FailStateStore.Parameters(), null, health);
+            assertNotSame(store, next);
+            FailStateStore.release(name, next);
+        } finally {
             HealthRegistry.unregister(HealthRegistry.Kind.INBOUND, name);
         }
     }

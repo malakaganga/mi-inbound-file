@@ -144,6 +144,12 @@ public class Lifecycle implements EndpointHealth.RuntimeMetrics {
                 .append("\tinFlight=").append(generation.inFlight);
     }
 
+    // True when the lifecycle is stopped and nothing of the drained generation is still out, so no task can hand the
+    // fail state store a new write any more.
+    public synchronized boolean stoppedWithNoWork() {
+        return state == State.STOPPED && (drain == null || !drain.generation.hasWork());
+    }
+
     public synchronized Generation enterPoll() {
         if (state == State.STOPPED) {
             health.namedLog().warn("The endpoint was polled while it is stopped.");
