@@ -297,6 +297,134 @@ class VFSConsumerPollTest {
         }
     }
 
+    // A temp name of a cut copy, as the shared module builds it: the target name, the creation second and a random
+    // part, each 7 base 36 digits, and the suffix.
+    private static String tempName(String target, long createdSeconds) {
+        String created = Long.toString(createdSeconds, 36);
+        return target + "." + "0000000".substring(created.length()) + created + "abc1234.part";
+    }
+
+    // The folders of a move setup: a success folder and a failure folder, with the files a sweep must judge.
+    private Path moveSetup(Path out, Path failed) throws Exception {
+        Path input = Files.createDirectory(folder.resolve("in"));
+        Files.createDirectory(out);
+        Files.createDirectory(failed);
+        properties.setProperty("transport.vfs.ActionAfterProcess", "MOVE");
+        properties.setProperty("transport.vfs.MoveAfterProcess", out.toUri().toString());
+        properties.setProperty("transport.vfs.ActionAfterFailure", "MOVE");
+        properties.setProperty("transport.vfs.MoveAfterFailure", failed.toUri().toString());
+        mediation = message -> {
+            Map<String, Object> headers = (Map<String, Object>) message.getAxis2MessageContext()
+                    .getProperty(MessageContext.TRANSPORT_HEADERS);
+            if (headers.get(VFSConstants.FILE_NAME).toString().startsWith("bad")) {
+                headers.put(VFSConstants.ERROR_CODE, "1");
+            }
+        };
+        return input;
+    }
+
+    @Test
+    void moveTargetSweepRemovesOnlyAStaleTempFileOfAFolderThatThePollUsed() throws Exception {
+        Path out = folder.resolve("out");
+        Path failed = folder.resolve("failed");
+        Path input = moveSetup(out, failed);
+        long now = System.currentTimeMillis() / 1000;
+        long old = now - TimeUnit.DAYS.toSeconds(2);
+        Path stale = Files.writeString(out.resolve(tempName("a.xml", old)), "abc");
+        Path young = Files.writeString(out.resolve(tempName("b.xml", now)), "abc");
+        Path growing = Files.writeString(out.resolve(tempName("c.xml", old)), "abc");
+        Path plain = Files.writeString(out.resolve("notes.txt"), "abc");
+        Path shape = Files.writeString(out.resolve("d.xml.0000000.part"), "abc");
+        Path unused = Files.writeString(failed.resolve(tempName("e.xml", old)), "abc");
+        AtomicLong elapsed = new AtomicLong();
+        try (MockedStatic<TestPoints> clocks = mockStatic(TestPoints.class, CALLS_REAL_METHODS)) {
+            clocks.when(() -> TestPoints.nanoTime("cleanup")).thenAnswer(call ->
+                    TimeUnit.MILLISECONDS.toNanos(elapsed.get()));
+            deploy(input.toUri().toString(), true);
+            Files.writeString(input.resolve("good1.xml"), "<g/>");
+            Files.writeString(input.resolve("bad1.xml"), "<b/>");
+            consumer.poll();
+            assertTrue(Files.isRegularFile(out.resolve("good1.xml")));
+            assertTrue(Files.isRegularFile(failed.resolve("bad1.xml")));
+            // The first sweep of each folder only notes the sizes.
+            for (Path kept : Arrays.asList(stale, young, growing, plain, shape, unused)) {
+                assertTrue(Files.exists(kept), kept.toString());
+            }
+            Files.writeString(growing, "abcdef");
+            elapsed.set(TimeUnit.MINUTES.toMillis(61));
+            Files.writeString(input.resolve("good2.xml"), "<g/>");
+            consumer.poll();
+            assertTrue(Files.isRegularFile(out.resolve("good2.xml")));
+            assertFalse(Files.exists(stale), "A stale temp file with the same size an hour apart is removed");
+            assertTrue(Files.exists(young), "A temp file younger than the stale age stays");
+            assertTrue(Files.exists(growing), "A temp file whose size changed stays");
+            assertTrue(Files.exists(plain), "A name that is not a temp name stays");
+            assertTrue(Files.exists(shape), "A name with the wrong shape stays");
+            assertTrue(Files.exists(unused), "A folder that this poll did not move into is not swept");
+        } finally {
+            close();
+        }
+    }
+
+    @Test
+    void moveTargetSweepWaitsWhileThePollSessionIsNotUsable() throws Exception {
+        Path out = folder.resolve("out");
+        Path input = moveSetup(out, folder.resolve("failed"));
+        Path stale = Files.writeString(out.resolve(tempName("a.xml",
+                System.currentTimeMillis() / 1000 - TimeUnit.DAYS.toSeconds(2))), "abc");
+        AtomicLong elapsed = new AtomicLong();
+        try (MockedStatic<TestPoints> clocks = mockStatic(TestPoints.class, CALLS_REAL_METHODS)) {
+            clocks.when(() -> TestPoints.nanoTime("cleanup")).thenAnswer(call ->
+                    TimeUnit.MILLISECONDS.toNanos(elapsed.get()));
+            properties.setProperty("transport.vfs.FileSortAttribute", "Name");
+            deploy(input.toUri().toString(), true);
+            Files.writeString(input.resolve("first.xml"), "<f/>");
+            consumer.poll();
+            elapsed.set(TimeUnit.MINUTES.toMillis(61));
+            // Three session resets in one poll end its admission, so its session is not used for the sweep.
+            resetDuringDelivery = true;
+            for (int index = 0; index < 3; index++) {
+                Files.writeString(input.resolve("reset" + index + ".xml"), "<r/>");
+            }
+            consumer.poll();
+            assertTrue(Files.isRegularFile(out.resolve("reset2.xml")));
+            assertTrue(Files.exists(stale), "No sweep with a session that spent its resets");
+            resetDuringDelivery = false;
+            Files.writeString(input.resolve("last.xml"), "<l/>");
+            consumer.poll();
+            assertFalse(Files.exists(stale), "The next usable poll sweeps the folder");
+        } finally {
+            close();
+        }
+    }
+
+    @Test
+    void failedMoveTargetSweepLeavesThePollAndTheMovesAndWarnsOnce() throws Exception {
+        Path out = folder.resolve("out");
+        Path input = moveSetup(out, folder.resolve("failed"));
+        setupSession = session -> doThrow(new IllegalStateException("Sweep fixture"))
+                .when(session).lockIo(VFSConstants.TRANSPORT_FILE_MOVE_AFTER_PROCESS);
+        AtomicLong elapsed = new AtomicLong();
+        try (Logs logs = new Logs(); MockedStatic<TestPoints> clocks = mockStatic(TestPoints.class, CALLS_REAL_METHODS)) {
+            clocks.when(() -> TestPoints.nanoTime("cleanup")).thenAnswer(call ->
+                    TimeUnit.MILLISECONDS.toNanos(elapsed.get()));
+            deploy(input.toUri().toString(), true);
+            Files.writeString(input.resolve("one.xml"), "<o/>");
+            consumer.poll();
+            elapsed.set(TimeUnit.MINUTES.toMillis(61));
+            Files.writeString(input.resolve("two.xml"), "<t/>");
+            consumer.poll();
+            assertEquals(List.of("/one.xml", "/two.xml"), deliveries);
+            assertTrue(Files.isRegularFile(out.resolve("one.xml")));
+            assertTrue(Files.isRegularFile(out.resolve("two.xml")));
+            assertFalse(Files.exists(input.resolve("one.xml.fail")));
+            assertFalse(Files.exists(input.resolve("two.xml.fail")));
+            assertEquals(1, logs.messages(Level.WARNING, endpoint, "were not swept").size());
+        } finally {
+            close();
+        }
+    }
+
     private static final class Logs extends Handler implements AutoCloseable {
         final Logger root = Logger.getLogger("");
         final List<LogRecord> records = new ArrayList<>();

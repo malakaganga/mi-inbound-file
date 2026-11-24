@@ -44,6 +44,7 @@ import org.wso2.vfs.shared.failstate.FileIdentity;
 import org.wso2.vfs.shared.lock.FolderListing;
 import org.wso2.vfs.shared.lock.HeldLock;
 import org.wso2.vfs.shared.lock.LockIo;
+import org.wso2.vfs.shared.write.TempCleanup;
 import org.wso2.vfs.shared.lock.LockOutcome;
 import org.wso2.vfs.shared.lock.ShareLock;
 import org.wso2.vfs.shared.log.NamedLog;
@@ -52,6 +53,7 @@ import org.wso2.vfs.shared.write.AtomicWriter;
 import org.wso2.carbon.inbound.vfs.reply.ReplySender;
 
 import java.io.IOException;
+import java.util.AbstractMap;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -79,6 +81,8 @@ public final class FileTask {
         final AtomicWriter writer;
         final Map<String, MoveTargetSpec> targets;
         final Map<String, MoveAction> moves = new HashMap<>();
+        // Sweeps the temp files that a cut copy of a move left in a target folder, at most once per folder per hour.
+        final TempCleanup cleanup;
 
         public Services(String endpoint, VFSConfig config, ShareLock locks, FailStateStore store,
                         ReadErrorCounter reads, FileInjectHandler inject, Map<String, MoveTargetSpec> targets,
@@ -95,6 +99,7 @@ public final class FileTask {
             classifier = new ErrorClassifier(log);
             delete = new DeleteAction(classifier);
             targets.forEach((key, spec) -> moves.put(key, new MoveAction(spec, config, log)));
+            cleanup = new TempCleanup(endpoint, health, locks, config.getTempFileSuffix());
         }
     }
 
@@ -104,6 +109,8 @@ public final class FileTask {
     private final String relative;
     private final boolean listingSucceeded;
     private PostAction postAction;
+    // The parameter and the target folder of the move that this task ran, for the sweep at the end of the poll.
+    private volatile Map.Entry<String, String> movedInto;
     private HeldLock held;
     private FileObject source;
     private FileInjectHandler.Content content;
@@ -600,8 +607,15 @@ public final class FileTask {
                 return ActionResult.beforeAction(failure);
             }
         }
-        return kind == FailState.Action.DELETE ? services.delete.execute(session, source, uri)
-                : services.moves.get(parameter).execute(session, generation, source, identity, target, services.store);
+        if (kind == FailState.Action.DELETE) {
+            return services.delete.execute(session, source, uri);
+        }
+        movedInto = new AbstractMap.SimpleImmutableEntry<>(parameter, target.parentUri);
+        return services.moves.get(parameter).execute(session, generation, source, identity, target, services.store);
+    }
+
+    Map.Entry<String, String> movedInto() {
+        return movedInto;
     }
 
     private LockIo writeIo(ActionResult action) {

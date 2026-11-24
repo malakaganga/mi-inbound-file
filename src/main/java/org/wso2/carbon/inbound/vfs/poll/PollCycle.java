@@ -40,12 +40,14 @@ import org.wso2.vfs.shared.lock.LockIo;
 import org.wso2.vfs.shared.lock.LockOutcome;
 import org.wso2.vfs.shared.lock.ReservedNames;
 import org.wso2.vfs.shared.log.UriMask;
+import org.wso2.vfs.shared.write.SweepResult;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -111,6 +113,9 @@ public final class PollCycle {
         final List<FolderListing> listings = new ArrayList<>();
         final Set<String> present = new HashSet<>();
         final List<CompletableFuture<FileTask.Outcome>> workers = new ArrayList<>();
+        // The tasks that took their file in this poll. Their moves name the target folders that the poll sweeps.
+        final List<FileTask> tasks = new ArrayList<>();
+        long startingResets;
         boolean listed;
         boolean missingSequence;
         int count;
@@ -137,7 +142,7 @@ public final class PollCycle {
                 }
                 session.beforePoll();
                 usedSession = true;
-                long startingResets = session.resetCount();
+                startingResets = session.resetCount();
                 try (FileObject root = resolveRoot()) {
                     if (root == null || !running()) {
                         return;
@@ -186,6 +191,7 @@ public final class PollCycle {
             } finally {
                 try {
                     awaitWorkers();
+                    sweepMoveTargets();
                     if (missingSequence) {
                         LOG.error(missingMessage);
                     }
@@ -202,6 +208,40 @@ public final class PollCycle {
                         generation.pollSkipped();
                     } else {
                         generation.pollFinished(listed, failure);
+                    }
+                }
+            }
+        }
+
+        // Sweeps each move target folder that a task of this poll used, with the poll session. The cleanup allows a
+        // folder once per hour. A failure here never fails the poll or a post action.
+        void sweepMoveTargets() {
+            Map<String, Set<String>> folders = new LinkedHashMap<>();
+            for (FileTask task : tasks) {
+                Map.Entry<String, String> used = task.movedInto();
+                if (used != null) {
+                    folders.computeIfAbsent(used.getKey(), key -> new LinkedHashSet<>()).add(used.getValue());
+                }
+            }
+            if (folders.isEmpty()) {
+                return;
+            }
+            if (!usedSession || !running() || failure != null && failure.getKind().isTransport()
+                    || session.resetCount() - startingResets >= 3) {
+                services.log.debug("The move target folders are not swept, because the poll session is not usable.");
+                return;
+            }
+            for (Map.Entry<String, Set<String>> entry : folders.entrySet()) {
+                for (String folder : entry.getValue()) {
+                    try {
+                        SweepResult result = services.moves.get(entry.getKey()).sweep(session, services.cleanup, folder);
+                        if (result.ended() == SweepResult.End.TRANSPORT_ERROR) {
+                            return;
+                        }
+                    } catch (RuntimeException error) {
+                        services.log.warn("The temp files of a move target folder were not swept at "
+                                + UriMask.mask(folder) + ". " + error);
+                        return;
                     }
                 }
             }
@@ -511,6 +551,7 @@ public final class PollCycle {
                 if (lock.kind != LockOutcome.Kind.ACQUIRED) {
                     return;
                 }
+                tasks.add(task);
                 if (slot == null) {
                     counted = false;
                     boolean deferReplacement = marker && generation.workerPool != null;
