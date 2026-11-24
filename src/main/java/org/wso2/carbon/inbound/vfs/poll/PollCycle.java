@@ -186,8 +186,8 @@ public final class PollCycle {
                 Thread.currentThread().interrupt();
             } catch (Exception problem) {
                 handleFailure(classify(problem));
-                services.log.error("Poll failed. " + problem.getClass().getSimpleName()
-                        + (failure == null ? "" : " " + failure.getStatusText()));
+                services.log.error(Utils.withTrace("Poll failed. " + problem.getClass().getSimpleName()
+                        + (failure == null ? "" : " " + failure.getStatusText()), problem));
             } finally {
                 try {
                     awaitWorkers();
@@ -636,7 +636,8 @@ public final class PollCycle {
                         return;
                     }
                     if (worker.isCompletedExceptionally()) {
-                        services.log.error("A file worker failed.");
+                        services.log.error(Utils.withTrace("A file worker failed.",
+                                worker.handle((result, problem) -> problem).join()));
                     } else {
                         missingSequence |= worker.join() == FileTask.Outcome.MISSING_SEQUENCE;
                     }

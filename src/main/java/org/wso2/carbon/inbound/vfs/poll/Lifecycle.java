@@ -17,6 +17,7 @@ package org.wso2.carbon.inbound.vfs.poll;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.wso2.carbon.inbound.vfs.Utils;
 import org.wso2.carbon.inbound.vfs.conn.VfsSession;
 import org.wso2.org.apache.commons.vfs2.util.TestPoints;
 import org.wso2.vfs.shared.health.EndpointHealth;
@@ -404,7 +405,8 @@ public class Lifecycle implements EndpointHealth.RuntimeMetrics {
             try {
                 current = build(current.number + 1);
             } catch (RuntimeException failure) {
-                health.namedLog().error("Could not resume the endpoint. " + failure.getClass().getSimpleName());
+                health.namedLog().error(Utils.withTrace("Could not resume the endpoint. "
+                        + failure.getClass().getSimpleName(), failure));
                 return;
             }
             synchronized (health) {

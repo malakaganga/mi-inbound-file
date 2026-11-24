@@ -321,6 +321,34 @@ class VFSConsumerPollTest {
         }
     }
 
+    @Test
+    void aMediationFailureAndAWorkerFailureAreLoggedWithTheirStackTrace() throws Exception {
+        write("a.xml", "<a/>", 2);
+        write("b.xml", "<b/>", 1);
+        properties.setProperty("transport.vfs.FileSortAttribute", "Name");
+        properties.setProperty("transport.vfs.WorkerPoolSize", "1");
+        deploy(folder.toUri().toString(), false);
+        mediation = message -> {
+            Map<?, ?> headers = (Map<?, ?>) message.getAxis2MessageContext()
+                    .getProperty(MessageContext.TRANSPORT_HEADERS);
+            if ("a.xml".equals(headers.get(VFSConstants.FILE_NAME))) {
+                throw new IllegalStateException();
+            }
+            throw new NoClassDefFoundError("Test worker error.");
+        };
+        try (Logs logs = new Logs()) {
+            consumer.poll();
+            List<String> mediated = logs.messages(Level.SEVERE, endpoint, "File mediation failed.");
+            assertEquals(1, mediated.size());
+            assertTrue(mediated.get(0).contains("java.lang.IllegalStateException"), mediated.get(0));
+            assertTrue(mediated.get(0).contains("\tat "), mediated.get(0));
+            List<String> worker = logs.messages(Level.SEVERE, endpoint, "A file worker failed.");
+            assertEquals(1, worker.size());
+            assertTrue(worker.get(0).contains("java.lang.NoClassDefFoundError: Test worker error."), worker.get(0));
+            assertTrue(worker.get(0).contains("\tat "), worker.get(0));
+        }
+    }
+
     // A temp name of a cut copy, as the shared module builds it: the target name, the creation second and a random
     // part, each 7 base 36 digits, and the suffix.
     private static String tempName(String target, long createdSeconds) {
@@ -493,6 +521,8 @@ class VFSConsumerPollTest {
             try (Logs logs = new Logs()) {
                 assertNull(consumer.poll());
                 assertEquals(1, logs.messages(Level.SEVERE, endpoint, "Poll failed").size());
+                assertTrue(logs.messages(Level.SEVERE, endpoint, "Poll failed").get(0)
+                        .contains("java.lang.IllegalStateException: Listing fixture"));
                 assertTrue(Files.exists(file));
                 consumer.poll();
                 assertFalse(Files.exists(file));

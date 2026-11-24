@@ -38,6 +38,8 @@ import org.wso2.org.apache.commons.vfs2.provider.sftp.SftpFileSystemConfigBuilde
 import org.wso2.org.apache.commons.vfs2.provider.smb2.Smb2FileSystemConfigBuilder;
 import org.wso2.org.apache.commons.vfs2.util.DelegatingFileSystemOptionsBuilder;
 
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.time.Duration;
@@ -473,6 +475,13 @@ public class Utils {
 
     public static String stripVfsSchemeIfPresent(String uri) {
         return uri != null && uri.startsWith("vfs:") ? uri.substring(4) : uri;
+    }
+
+    /** The text and the stack trace of the error, for a named log call, which masks and prefixes every line. */
+    public static String withTrace(String text, Throwable error) {
+        StringWriter trace = new StringWriter();
+        error.printStackTrace(new PrintWriter(trace));
+        return text + System.lineSeparator() + trace.toString().trim();
     }
 
     public static Map<String, String> parseSchemeFileOptions(String fileURI, Properties vfsProperties) {
