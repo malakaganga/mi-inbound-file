@@ -559,6 +559,9 @@ public final class FileTask {
         }
 
         Outcome record(LockIo write) {
+            // The first failure of the post action for this file. The retries of the fail state log no line here.
+            services.log.warn("The post action " + kind + " failed at step " + result.step + ". " + LockIo.pointKey(uri)
+                    + (result.failure == null ? "" : " " + result.failure.getStatusText()));
             HeldLock handle = held;
             held = null;
             return written(services.store.recordFailureResult(write, handle, identity,

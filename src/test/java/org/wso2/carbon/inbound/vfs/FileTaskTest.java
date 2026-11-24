@@ -76,17 +76,23 @@ import org.wso2.vfs.shared.lock.ShareLock;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -687,6 +693,39 @@ class FileTaskTest {
         verify(inject, times(1)).invoke(any(), any(), anyMap(), any());
         assertEquals(success ? 1L : 0L, health.snapshot().get("filesDone"));
         assertEquals(success ? 0L : 1L, health.snapshot().get("filesFailed"));
+    }
+
+    // The first failure of a post action is named at WARN with the file, the step and the error. Its retries are not.
+    @Test
+    void theFirstFailureOfAPostActionIsAWarningAndItsRetryIsNot() throws Exception {
+        destinations.setProperty(VFSConstants.TRANSPORT_FILE_MOVE_AFTER_PROCESS, folder.resolve("absent").toUri().toString());
+        successAction = "MOVE";
+        retryMillis = 0;
+        start(0, 1000);
+        when(inject.invoke(any(), any(), anyMap(), any())).thenReturn(true);
+        Logger logger = Logger.getLogger(EndpointHealth.class.getName());
+        List<String> warnings = new ArrayList<>();
+        Handler handler = new Handler() {
+            public void publish(LogRecord record) {
+                if (record.getLevel() == Level.WARNING && record.getMessage().contains("The post action")) {
+                    warnings.add(record.getMessage());
+                }
+            }
+            public void flush() { }
+            public void close() { }
+        };
+        logger.addHandler(handler);
+        try {
+            assertEquals(FileTask.Outcome.STATE_WRITTEN, admitted(file, "").processOnPoll(null, false));
+            assertEquals(1, warnings.size(), warnings.toString());
+            assertTrue(warnings.get(0).contains("The post action MOVE failed at step") && warnings.get(0).contains("message.txt")
+                    && warnings.get(0).contains("move folder is unavailable"), warnings.toString());
+            admitted(file, "").processOnPoll(null, false);
+            assertEquals(1, warnings.size(), warnings.toString());
+            assertTrue(Files.exists(file));
+        } finally {
+            logger.removeHandler(handler);
+        }
     }
 
     @Test
