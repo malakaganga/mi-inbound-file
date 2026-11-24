@@ -355,6 +355,15 @@ public final class FileTask {
         if (reply.transportFailure() != null) {
             resetUsable &= reply.resetUsable();
             source = null;
+            if (postAction.kind == FailState.Action.NONE) {
+                // No action is owed, so no fail state is written.
+                postAction.account();
+                if (resetUsable && reply.transportFailure().isFast()
+                        && generation.lifecycle.state() == Lifecycle.State.RUNNING) {
+                    releaseChecked();
+                }
+                return postAction.outcome();
+            }
             postAction.result = ActionResult.beforeAction(reply.transportFailure());
             postAction.account();
             return postAction.record(writeIo(postAction.result));

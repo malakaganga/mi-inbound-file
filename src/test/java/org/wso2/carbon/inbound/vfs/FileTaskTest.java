@@ -29,6 +29,9 @@ import org.wso2.org.apache.commons.vfs2.FileSystemException;
 import org.wso2.org.apache.commons.vfs2.provider.Fault;
 import org.wso2.carbon.inbound.vfs.processor.MoveTargetSpec;
 import org.wso2.carbon.inbound.vfs.processor.MoveAction;
+import org.wso2.carbon.inbound.vfs.reply.ReplySender;
+import org.wso2.vfs.shared.error.Classification;
+import org.wso2.vfs.shared.error.ErrorClassifier;
 import org.mockito.MockedConstruction;
 import org.mockito.stubbing.Answer;
 import org.wso2.org.apache.commons.vfs2.FileSystemOptions;
@@ -931,6 +934,30 @@ class FileTaskTest {
         assertEquals(action.equals("MOVE"), Files.exists(done.resolve("message.txt")));
         assertEquals(0L, health.snapshot().get("failStatesPending"));
         assertEquals(1L, health.snapshot().get("filesDone"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void aReplyTransportErrorWithNoActionWritesNoFailStateAndReleasesTheLock(boolean success) throws Exception {
+        successAction = "NONE";
+        start(0, 1000);
+        FileSystemException lost = new FileSystemException("Test reply connection lost.");
+        lost.setFault(Fault.TRANSPORT);
+        Classification failure = new ErrorClassifier(health.namedLog()).classify(lost, 0, ErrorClassifier.CallType.CHANGE);
+        when(inject.invoke(any(), any(), anyMap(), any())).thenReturn(success);
+        try (MockedConstruction<ReplySender> ignored = mockConstruction(ReplySender.class, (reply, context) -> {
+            when(reply.transportFailure()).thenReturn(failure);
+            when(reply.resetUsable()).thenReturn(true);
+        })) {
+            assertEquals(success ? FileTask.Outcome.PROCESSED : FileTask.Outcome.FAILED,
+                    admitted(file, "").processOnPoll(null, false));
+        }
+        assertArrayEquals(new byte[]{21, 22}, Files.readAllBytes(file));
+        assertFalse(Files.exists(lock));
+        assertFalse(Files.exists(folder.resolve("message.txt.fail")));
+        assertEquals(0L, health.snapshot().get("failStatesPending"));
+        assertEquals(success ? 1L : 0L, health.snapshot().get("filesDone"));
+        assertEquals(success ? 0L : 1L, health.snapshot().get("filesFailed"));
     }
 
     @Test
