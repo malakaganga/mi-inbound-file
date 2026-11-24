@@ -88,9 +88,14 @@ class MarkedLifecycleRaceTest {
         }
     }
 
+    // The checks of a round, by number.
+    private static final String[] CHECKS = {"", "resume waits for the drain", "new generation starts after done",
+            "health paused and then ok", "second call waits for the drain", "final state follows the order",
+            "old runner leaves the new sessions alone"};
+
     private void check(Map<Integer, String> failures, int row, boolean observed, String detail) {
         if (!observed) {
-            failures.putIfAbsent(row, "F1.8." + row + " " + detail);
+            failures.putIfAbsent(row, CHECKS[row] + ": " + detail);
         }
     }
 
@@ -110,9 +115,9 @@ class MarkedLifecycleRaceTest {
             VfsSession newSession(long number) {
                 if (number > 1) {
                     String state = LifecycleTest.snapshot(lifecycle.get());
-                    assertTrue(state.contains("done=true"), "F1.8.2 " + state);
+                    assertTrue(state.contains("done=true"), "new generation starts after done " + state);
                     atBuild.add(health.state().name());
-                    assertEquals(EndpointHealth.State.PAUSED, health.state(), "F1.8.3");
+                    assertEquals(EndpointHealth.State.PAUSED, health.state(), "health paused before the new generation");
                 }
                 VfsSession session = mock(VfsSession.class);
                 doAnswer(call -> events.add("abort " + number + " " + Thread.currentThread().getName())).when(session).abort();
@@ -155,12 +160,12 @@ class MarkedLifecycleRaceTest {
                 second.waitingAt("await");
             }
             held = LifecycleTest.snapshot(life);
-            assertTrue(held.contains("state=DRAINING") && held.contains("done=false"), "F1.8.4 " + held);
-            assertFalse(first.hasReturned(), resumeFirst ? "F1.8.1" : "F1.8.4");
+            assertTrue(held.contains("state=DRAINING") && held.contains("done=false"), "second call waits for the drain " + held);
+            assertFalse(first.hasReturned(), resumeFirst ? "resume waits for the drain" : "second call waits for the drain");
             if (second != null) {
-                assertFalse(second.hasReturned(), resumeFirst ? "F1.8.4" : "F1.8.1");
+                assertFalse(second.hasReturned(), resumeFirst ? "second call waits for the drain" : "resume waits for the drain");
             }
-            assertEquals(1, sessions.size(), "F1.8.1");
+            assertEquals(1, sessions.size(), "resume waits for the drain");
         } finally {
             Files.deleteIfExists(hold);
         }

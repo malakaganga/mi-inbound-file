@@ -107,8 +107,8 @@ class LateGenerationTest {
             long elapsed = (System.nanoTime() - start) / 1000000;
             assertTrue(elapsed >= 995 && elapsed < 2000, "elapsed=" + elapsed);
             assertTrue(first.isRetired());
-            assertEquals(keepAnotherWorker ? 2 : 1, first.inFlight, "F1.9.2");
-            verify(old.get(1), never().description("F1.9.3")).closeAfterAbort();
+            assertEquals(keepAnotherWorker ? 2 : 1, first.inFlight, "old generation counts");
+            verify(old.get(1), never().description("late file ends alone")).closeAfterAbort();
             life.resume();
             Generation next = life.enterPoll();
             next.pollStarted();
@@ -118,21 +118,21 @@ class LateGenerationTest {
             int newBefore = next.inFlight;
             boolean pollBefore = next.pollActive;
             a.end();
-            assertEquals(keepAnotherWorker ? 1 : 0, first.inFlight, "F1.9.2");
-            assertEquals(1, next.inFlight, "F1.9.1");
-            assertTrue(next.pollActive, "F1.9.1");
+            assertEquals(keepAnotherWorker ? 1 : 0, first.inFlight, "old generation counts");
+            assertEquals(1, next.inFlight, "new generation unchanged");
+            assertTrue(next.pollActive, "new generation unchanged");
             Map<String, Object> after = health.snapshot();
             for (String key : Arrays.asList("state", "filesDone", "filesFailed", "flags", "openSessions")) {
-                assertEquals(before.get(key), after.get(key), "F1.9.1 " + key);
+                assertEquals(before.get(key), after.get(key), "new generation unchanged " + key);
             }
-            assertEquals(0, a.normalActions.get(), "F1.9.3");
-            verify(a.handle, times(1).description("F1.9.3")).abandon();
-            verify(a.handle, never().description("F1.9.3")).pendingStateWrite();
-            verify(a.handle, never().description("F1.9.3")).unlockShare(any());
-            verify(a.handle, never().description("F1.9.3")).releaseChecked(any());
-            verify(a.handle, never().description("F1.9.3")).releaseAfterAction(any(), any());
-            verify(old.get(1), times(1).description("F1.9.3")).closeAfterAbort();
-            assertSame(a.call.thread, a.closer.get(), "F1.9.3");
+            assertEquals(0, a.normalActions.get(), "late file ends alone");
+            verify(a.handle, times(1).description("late file ends alone")).abandon();
+            verify(a.handle, never().description("late file ends alone")).pendingStateWrite();
+            verify(a.handle, never().description("late file ends alone")).unlockShare(any());
+            verify(a.handle, never().description("late file ends alone")).releaseChecked(any());
+            verify(a.handle, never().description("late file ends alone")).releaseAfterAction(any(), any());
+            verify(old.get(1), times(1).description("late file ends alone")).closeAfterAbort();
+            assertSame(a.call.thread, a.closer.get(), "late file ends alone");
             String counts = oldBefore + "\t" + first.inFlight + "\t" + newBefore + "\t" + next.inFlight
                     + "\t" + pollBefore + "\t" + next.pollActive;
             LifecycleTest.Call stop = new LifecycleTest.Call("stop-new-generation", () -> life.stop("pause"));
@@ -140,15 +140,15 @@ class LateGenerationTest {
             b.end();
             life.exitPoll(next);
             stop.join();
-            assertEquals(1, b.normalActions.get(), "F1.9.4");
+            assertEquals(1, b.normalActions.get(), "new drain does not wait for the old worker");
             boolean anotherHeld = c != null && !c.call.task.isDone();
             if (c != null) {
-                assertFalse(c.call.task.isDone(), "F1.9.4");
-                assertEquals(1, first.inFlight, "F1.9.4");
-                verify(old.get(2), never().description("F1.9.4")).closeAfterAbort();
+                assertFalse(c.call.task.isDone(), "new drain does not wait for the old worker");
+                assertEquals(1, first.inFlight, "new drain does not wait for the old worker");
+                verify(old.get(2), never().description("new drain does not wait for the old worker")).closeAfterAbort();
                 c.end();
-                assertSame(c.call.thread, c.closer.get(), "F1.9.4");
-                assertEquals(0, first.inFlight, "F1.9.4");
+                assertSame(c.call.thread, c.closer.get(), "new drain does not wait for the old worker");
+                assertEquals(0, first.inFlight, "new drain does not wait for the old worker");
             }
             Path report = Paths.get("target", "surefire-reports", keepAnotherWorker ? "late-two.tsv" : "late-one.tsv");
             Files.createDirectories(report.getParent());
@@ -159,7 +159,7 @@ class LateGenerationTest {
                             + "\t" + before.get("lateThreads") + "\t" + after.get("lateThreads")
                             + "\t" + a.normalActions.get() + "\t" + (a.closer.get() == a.call.thread)
                             + "\t" + anotherHeld + "\t" + life.state()), StandardCharsets.UTF_8);
-            assertEquals(((Number) before.get("lateThreads")).longValue() + 1, after.get("lateThreads"), "F1.9.2");
+            assertEquals(((Number) before.get("lateThreads")).longValue() + 1, after.get("lateThreads"), "old generation counts");
         } finally {
             HealthRegistry.unregister(HealthRegistry.Kind.INBOUND, name);
         }
