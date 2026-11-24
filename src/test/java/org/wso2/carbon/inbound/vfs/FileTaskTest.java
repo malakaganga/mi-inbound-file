@@ -30,6 +30,7 @@ import org.wso2.org.apache.commons.vfs2.provider.Fault;
 import org.wso2.carbon.inbound.vfs.processor.MoveTargetSpec;
 import org.wso2.carbon.inbound.vfs.processor.MoveAction;
 import org.mockito.MockedConstruction;
+import org.mockito.stubbing.Answer;
 import org.wso2.org.apache.commons.vfs2.FileSystemOptions;
 import org.wso2.org.apache.commons.vfs2.FileType;
 import org.wso2.org.apache.commons.vfs2.provider.GenericURLFileName;
@@ -888,6 +889,47 @@ class FileTaskTest {
         assertFalse(Files.exists(file));
         assertFalse(Files.exists(folder.resolve("message.txt.fail")));
         verify(inject, times(1)).invoke(any(), any(), anyMap(), any());
+        assertEquals(1L, health.snapshot().get("filesDone"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"DELETE", "MOVE"})
+    void contentThatTheFlowDidNotReadIsClosedBeforeThePostAction(String action) throws Exception {
+        Path done = folder.resolve("done");
+        if (action.equals("MOVE")) {
+            Files.createDirectory(done);
+            destinations.setProperty(VFSConstants.TRANSPORT_FILE_MOVE_AFTER_PROCESS, done.toUri().toString());
+        }
+        successAction = action;
+        controlledOwner = true;
+        start(0, 1000);
+        VfsSession session = generation.pollSession;
+        String uri = file.toUri().toString();
+        AbstractFileObject<?> source = spy((AbstractFileObject<?>) session.resolve(uri,
+                session.options(VFSConstants.TRANSPORT_FILE_FILE_URI)));
+        // As on an SMB2 share, a delete or a rename of the file fails while a read handle of it is open.
+        Answer<Object> shareReadOnly = call -> {
+            if (source.getContent().isOpen()) {
+                FileSystemException refused = new FileSystemException("Test file is open for read.");
+                refused.setFault(Fault.APPLICATION);
+                throw refused;
+            }
+            return call.callRealMethod();
+        };
+        doAnswer(shareReadOnly).when(source).delete();
+        doAnswer(shareReadOnly).when(source).moveTo(any(FileObject.class), any(MoveOptions.class));
+        doReturn(source).when(session).resolve(eq(uri), any());
+        // The flow opens the body and reads none of it.
+        when(inject.invoke(any(), any(), anyMap(), any())).thenAnswer(call -> {
+            ((FileInjectHandler.Content) call.getArgument(3)).open();
+            return true;
+        });
+        assertEquals(FileTask.Outcome.PROCESSED, admitted(file, "").processOnPoll(null, false));
+        assertFalse(Files.exists(file));
+        assertFalse(Files.exists(lock));
+        assertFalse(Files.exists(folder.resolve("message.txt.fail")));
+        assertEquals(action.equals("MOVE"), Files.exists(done.resolve("message.txt")));
+        assertEquals(0L, health.snapshot().get("failStatesPending"));
         assertEquals(1L, health.snapshot().get("filesDone"));
     }
 

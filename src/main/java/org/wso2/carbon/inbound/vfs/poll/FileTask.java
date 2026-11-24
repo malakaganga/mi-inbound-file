@@ -289,13 +289,7 @@ public final class FileTask {
         } finally {
             try {
                 point(13);
-                if (content != null) {
-                    try {
-                        content.close();
-                    } catch (RuntimeException failure) {
-                        services.log.warn("Could not close the file content.");
-                    }
-                }
+                closeContent();
                 if (source != null) {
                     try {
                         source.close();
@@ -431,7 +425,20 @@ public final class FileTask {
         return finish(postAction);
     }
 
+    // A second close is a no-op: the streams and the data source end once.
+    private void closeContent() {
+        if (content != null) {
+            try {
+                content.close();
+            } catch (RuntimeException failure) {
+                services.log.warn("Could not close the file content.");
+            }
+        }
+    }
+
     private Outcome finish(PostAction post) {
+        // An open read handle blocks a delete or a rename on some servers, so the content ends before the owner check.
+        closeContent();
         point(8);
         if (generation.isRetired()) {
             return Outcome.RETIRED;
