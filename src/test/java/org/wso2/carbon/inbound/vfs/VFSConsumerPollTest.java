@@ -325,6 +325,69 @@ class VFSConsumerPollTest {
     }
 
     @Test
+    void aCappedFileThatLeftTheListingLosesItsCountAndItsFlag() throws Exception {
+        Path file = write("a.xml", "<a/>", 1);
+        String uri = file.toUri().toString();
+        properties.setProperty("transport.vfs.WorkerPoolSize", "1");
+        properties.setProperty("transport.vfs.MaxReadTransportErrors", "1");
+        String root = folder.toUri().toString();
+        java.util.concurrent.atomic.AtomicBoolean metadataRefused = new java.util.concurrent.atomic.AtomicBoolean();
+        setupSession = session -> {
+            // Every read of the file content breaks the connection. The listing and the lock work.
+            doAnswer(call -> {
+                FileObject view = spy((FileObject) call.callRealMethod());
+                FileSystemException lost = new FileSystemException("Test read connection lost.");
+                lost.setFault(Fault.TRANSPORT);
+                doThrow(lost).when(view).getContent();
+                return view;
+            }).when(session).resolve(eq(uri), any());
+            // When asked, the listing shows the file but its metadata read fails with an application error.
+            doAnswer(call -> {
+                FileObject resolved = (FileObject) call.callRealMethod();
+                if (!metadataRefused.get()) {
+                    return resolved;
+                }
+                FileObject view = spy(resolved);
+                doAnswer(list -> {
+                    FileObject[] children = resolved.getChildren();
+                    for (int index = 0; index < children.length; index++) {
+                        if (children[index].getName().getBaseName().equals("a.xml")) {
+                            FileObject child = spy(children[index]);
+                            FileSystemException refused = new FileSystemException("Test metadata refused.");
+                            refused.setFault(Fault.APPLICATION);
+                            doThrow(refused).when(child).getContent();
+                            children[index] = child;
+                        }
+                    }
+                    return children;
+                }).when(view).getChildren();
+                return view;
+            }).when(session).resolve(eq(root), any());
+        };
+        deploy(root, false);
+        consumer.poll();
+        assertEquals(0L, readCapFlags());
+        consumer.poll();
+        assertEquals(1L, readCapFlags());
+        assertTrue(Files.exists(file));
+        assertTrue(deliveries.isEmpty());
+        // A file that is listed and skipped keeps its count.
+        metadataRefused.set(true);
+        consumer.poll();
+        assertEquals(1L, readCapFlags());
+        metadataRefused.set(false);
+        Files.delete(file);
+        consumer.poll();
+        assertEquals(0L, readCapFlags());
+    }
+
+    private long readCapFlags() {
+        Map<?, ?> flags = (Map<?, ?>) consumer.getHealth().get("flags");
+        Map<?, ?> detail = flags == null ? null : (Map<?, ?>) flags.get("READ_CAP");
+        return detail == null ? 0L : (Long) detail.get("count");
+    }
+
+    @Test
     void aMediationFailureAndAWorkerFailureAreLoggedWithTheirStackTrace() throws Exception {
         write("a.xml", "<a/>", 2);
         write("b.xml", "<b/>", 1);

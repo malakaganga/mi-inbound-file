@@ -165,6 +165,7 @@ public final class PollCycle {
                     }
                     backoff = 0;
                     selector.retain(present);
+                    services.reads.listed(generation, present);
                     if (TestPoints.enabled()) {
                         TestPoints.hold("poll.after-listing", services.endpoint);
                     }
@@ -393,6 +394,7 @@ public final class PollCycle {
                     services.log.debug("The type read failed for " + child.getName().getURI() + ". "
                             + failure.getStatusText());
                     names.put(name, new FolderListing.Metadata(-1, 0));
+                    present.add(child.getName().getURI());
                     continue;
                 }
                 boolean directory = type == FileType.FOLDER;
@@ -407,6 +409,8 @@ public final class PollCycle {
                         if (classify(problem).getKind().isTransport()) {
                             throw problem;
                         }
+                        // The file is still in the listing, so it keeps its read error count.
+                        present.add(child.getName().getURI());
                         services.log.debug("Could not read the metadata for " + child.getName().getURI());
                     }
                 } else if (directory && recursive && !reserved(name, true)) {
