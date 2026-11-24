@@ -72,7 +72,6 @@ class SchemaDefaultsTest {
         expected.put("TempFolderName", config.getTempFolderName());
         expected.put("TempFileSuffix", config.getTempFileSuffix());
         expected.put("MaxRetryCount", config.getMaxRetryCount());
-        expected.put("LockStaleAge", config.getLockStaleAge());
         expected.put("AutoLockRelease", config.isAutoLockRelease());
         expected.put("FailedRecordNextRetryDuration", config.getFailedRecordNextRetryDuration());
         expected.put("FailedRecordFlagAfterRetries", config.getFailedRecordFlagAfterRetries());
@@ -89,9 +88,11 @@ class SchemaDefaultsTest {
         expected.put("ActionAfterFailure", "DELETE");
         assertEquals(0, config.getCheckSizeInterval());
         expected.put("CheckSizeInterval", null);
+        // A UI endpoint sends no stale age by default, so a deprecated interval that the user sets still applies.
+        assertEquals(900000, config.getLockStaleAge());
         for (String unset : ("FileURI FailedRecordsFileName FailedRecordsFileDestination MoveFailedRecordTimestampFormat "
-                + "AutoLockReleaseInterval waitTimeBeforeRead ResolveHostsDynamically ActionAfterErrors MoveAfterErrors "
-                + "DistributedLock DistributedTimeout ClusterAware").split(" ")) {
+                + "AutoLockReleaseInterval LockStaleAge waitTimeBeforeRead ResolveHostsDynamically ActionAfterErrors "
+                + "MoveAfterErrors DistributedLock DistributedTimeout ClusterAware").split(" ")) {
             expected.put(unset, null);
         }
         for (String option : ("SFTPIdentities SFTPIdentityPassPhrase SFTPUserDirIsRoot SFTPSessionTimeout "
@@ -119,5 +120,22 @@ class SchemaDefaultsTest {
             assertNotNull(fields.remove(ui), ui);
         }
         assertTrue(fields.isEmpty(), fields.toString());
+    }
+
+    @Test
+    void theDeprecatedLockReleaseIntervalIsNotRequired() throws Exception {
+        try (InputStreamReader reader = new InputStreamReader(
+                getClass().getResourceAsStream("/uischema.json"), StandardCharsets.UTF_8)) {
+            for (JsonElement group : JsonParser.parseReader(reader).getAsJsonObject().getAsJsonArray("elements")) {
+                for (JsonElement entry : group.getAsJsonObject().getAsJsonObject("value").getAsJsonArray("elements")) {
+                    JsonObject value = entry.getAsJsonObject().getAsJsonObject("value");
+                    if (value.get("name").getAsString().equals("transport.vfs.AutoLockReleaseInterval")) {
+                        assertEquals("false", value.get("required").getAsString());
+                        return;
+                    }
+                }
+            }
+        }
+        fail("The schema has no transport.vfs.AutoLockReleaseInterval.");
     }
 }

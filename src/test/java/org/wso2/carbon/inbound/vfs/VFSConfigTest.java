@@ -46,12 +46,17 @@ import org.wso2.vfs.shared.log.NamedLog;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.UUID;
 import java.util.function.Function;
+import java.util.logging.Handler;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -157,6 +162,34 @@ class VFSConfigTest {
         Properties p = properties();
         p.setProperty(PREFIX + "ReconnectTimeout", text);
         assertEquals(expected, new VFSConfig(p).getReconnectTimeout());
+    }
+
+    @Test
+    void anEmptyStaleAgeOrReleaseIntervalMeansNotSet() {
+        Properties p = properties();
+        p.setProperty(PREFIX + "LockStaleAge", "");
+        p.setProperty(PREFIX + "AutoLockReleaseInterval", "");
+        assertEquals(900000, new VFSConfig(p).getLockStaleAge());
+        p.setProperty(PREFIX + "AutoLockReleaseInterval", "1200000");
+        assertEquals(1200000, new VFSConfig(p).getLockStaleAge());
+        Logger logger = Logger.getLogger(VFSConfig.class.getName());
+        List<String> warnings = new ArrayList<>();
+        Handler handler = new Handler() {
+            public void publish(LogRecord record) {
+                warnings.add(record.getMessage());
+            }
+            public void flush() { }
+            public void close() { }
+        };
+        logger.addHandler(handler);
+        try {
+            p.setProperty(PREFIX + "LockStaleAge", "120000");
+            p.setProperty(PREFIX + "AutoLockReleaseInterval", "");
+            assertEquals(120000, new VFSConfig(p).getLockStaleAge());
+            assertTrue(warnings.stream().noneMatch(w -> w.contains("is ignored")), warnings.toString());
+        } finally {
+            logger.removeHandler(handler);
+        }
     }
 
     @ParameterizedTest

@@ -491,7 +491,7 @@
               "name": "transport.vfs.AutoLockReleaseInterval",
               "displayName": "Auto Lock Release Interval",
               "inputType": "string",
-              "required": "true",
+              "required": "false",
               "defaultValue": "",
               "enableCondition": [
                 {
@@ -543,7 +543,7 @@
               "displayName": "Lock Stale Age",
               "inputType": "string",
               "required": "false",
-              "defaultValue": "900000"
+              "defaultValue": ""
             }
           },
           {

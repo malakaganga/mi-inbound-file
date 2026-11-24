@@ -385,7 +385,8 @@ public final class VFSConfig {
     private static Long number(Properties p, String key, Long fallback, long min) {
         String value = p.getProperty(key);
         if (value == null || value.isEmpty() && (TRANSPORT_CHECK_SIZE_INTERVAL.equals(key)
-                || TRANSPORT_FILE_MINIMUM_AGE.equals(key) || TRANSPORT_FILE_MAXIMUM_AGE.equals(key))) {
+                || TRANSPORT_FILE_MINIMUM_AGE.equals(key) || TRANSPORT_FILE_MAXIMUM_AGE.equals(key)
+                || STALE_AGE.equals(key) || TRANSPORT_AUTO_LOCK_RELEASE_INTERVAL.equals(key))) {
             return fallback;
         }
         try {
@@ -495,7 +496,8 @@ public final class VFSConfig {
     }
 
     private void ignored(Properties p, String key, String reason) {
-        if (p.getProperty(key) != null) {
+        String value = p.getProperty(key);
+        if (value != null && !value.isEmpty()) {
             diagnostics.warn(key + " is ignored." + (reason.isEmpty() ? "" : " " + reason));
         }
     }
