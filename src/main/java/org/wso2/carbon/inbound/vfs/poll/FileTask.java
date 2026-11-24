@@ -144,7 +144,7 @@ public final class FileTask {
     private void point(int step) {
         if (TestPoints.enabled()) {
             String point = "filetask.step." + step;
-            if (step == 10 || step == 12) {
+            if (step == 12) {
                 TestPoints.event(point, LockIo.pointKey(uri), "endpoint=" + services.endpoint,
                         "generation=" + generation.number);
             } else {

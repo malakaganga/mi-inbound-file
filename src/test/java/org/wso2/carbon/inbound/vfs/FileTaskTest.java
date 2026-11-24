@@ -36,6 +36,7 @@ import org.wso2.org.apache.commons.vfs2.provider.GenericURLFileName;
 import org.wso2.org.apache.commons.vfs2.provider.sftp.SftpFileObject;
 import org.wso2.org.apache.commons.vfs2.provider.sftp.SftpFileSystem;
 import org.wso2.org.apache.commons.vfs2.provider.sftp.SftpFileSystemConfigBuilder;
+import org.wso2.org.apache.commons.vfs2.util.TestPoints;
 import org.wso2.vfs.shared.lock.LockIo;
 import org.wso2.vfs.shared.failstate.FailState;
 import org.wso2.vfs.shared.write.TempName;
@@ -47,6 +48,7 @@ import org.apache.synapse.SynapseConstants;
 import org.apache.synapse.mediators.base.SequenceMediator;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -69,6 +71,7 @@ import org.wso2.vfs.shared.lock.ShareLock;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -77,7 +80,9 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -462,6 +467,72 @@ class FileTaskTest {
             object.close();
         }
         verify(environment, times(4)).injectInbound(same(message), same(sequence), eq(true));
+    }
+
+    @Test
+    @Tag("testbuild")
+    void deleteWaitsAfterTheOwnerCheckUntilTheRelease(@TempDir Path root) throws Exception {
+        String previous = System.setProperty("vfs.testpoints.dir", root.toString());
+        String point = "filetask.step.10";
+        try {
+            start(0, 1000);
+            when(inject.invoke(any(), any(), anyMap(), any())).thenReturn(true);
+            TestPoints.copy("inbound", VFSConsumer.class);
+            TestPoints.event("hold.ready", endpoint);
+            Path copy;
+            try (Stream<Path> folders = Files.list(root)) {
+                copy = folders.filter(Files::isDirectory).findFirst().get();
+            }
+            Path hold = Files.write(copy.resolve(point + ".hold"),
+                    Arrays.asList("endpoint=" + endpoint, "wait=30"), StandardCharsets.UTF_8);
+            AtomicBoolean done = new AtomicBoolean();
+            AtomicReference<String> seen = new AtomicReference<>("The task did not reach " + point);
+            // The task runs on the thread of the poll. This thread watches the hold and releases it.
+            Thread releaser = new Thread(() -> {
+                try {
+                    long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                    while (System.nanoTime() < end && !reached(copy, point)) {
+                        if (done.get()) {
+                            seen.set("The task completed without waiting at " + point);
+                            return;
+                        }
+                        Thread.sleep(5);
+                    }
+                    if (!reached(copy, point)) {
+                        return;
+                    }
+                    Thread.sleep(300);
+                    seen.set("waits=" + !done.get() + " file=" + Files.exists(file) + " lock=" + Files.exists(lock));
+                    Files.delete(hold);
+                } catch (Exception e) {
+                    seen.set(e.toString());
+                }
+            });
+            releaser.start();
+            FileTask.Outcome outcome = admitted(file, "").processOnPoll(null, false);
+            done.set(true);
+            releaser.join(TimeUnit.SECONDS.toMillis(15));
+            // At the hold the owner check is done and the delete is not: the file and its lock are still there.
+            assertEquals("waits=true file=true lock=true", seen.get());
+            assertEquals(FileTask.Outcome.PROCESSED, outcome);
+            assertFalse(Files.exists(file));
+            assertFalse(Files.exists(lock));
+            assertTrue(Files.readAllLines(copy.resolve("events.log")).stream().anyMatch(line ->
+                    line.contains("hold-end") && line.contains("at=" + point) && line.contains("end=released")));
+        } finally {
+            if (previous == null) {
+                System.clearProperty("vfs.testpoints.dir");
+            } else {
+                System.setProperty("vfs.testpoints.dir", previous);
+            }
+        }
+    }
+
+    private static boolean reached(Path copy, String point) throws java.io.IOException {
+        try (Stream<Path> names = Files.list(copy)) {
+            return names.map(name -> name.getFileName().toString())
+                    .anyMatch(name -> name.startsWith(point + "@") && name.endsWith(".reached"));
+        }
     }
 
     @Test
