@@ -20,6 +20,7 @@ package org.wso2.carbon.inbound.vfs;
 
 import org.apache.axis2.context.ConfigurationContext;
 import org.apache.axis2.util.GracefulShutdownTimer;
+import org.apache.synapse.config.SynapseConfiguration;
 import org.apache.synapse.core.SynapseEnvironment;
 import org.apache.synapse.core.axis2.Axis2SynapseEnvironment;
 import org.wso2.carbon.inbound.endpoint.protocol.generic.GenericPollingConsumer;
@@ -210,7 +211,9 @@ public class VFSConsumer extends GenericPollingConsumer {
         if (generation != null) {
             try {
                 // The deployer can schedule this consumer before publishing its endpoint.
-                if (synapseEnvironment.getSynapseConfiguration().getInboundEndpoint(name) != null) {
+                SynapseConfiguration configuration = synapseEnvironment == null ? null
+                        : synapseEnvironment.getSynapseConfiguration();
+                if (configuration != null && configuration.getInboundEndpoint(name) != null) {
                     active.run(generation);
                 }
             } finally {

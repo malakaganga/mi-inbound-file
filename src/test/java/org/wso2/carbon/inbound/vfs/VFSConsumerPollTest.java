@@ -69,7 +69,7 @@ class VFSConsumerPollTest {
 
     java.util.function.Consumer<Axis2MessageContext> mediation = message -> { };
 
-    void deploy(String uri, boolean sequential) throws Exception {
+    SynapseEnvironment deploy(String uri, boolean sequential) throws Exception {
         SynapseEnvironment environment = mock(SynapseEnvironment.class);
         when(environment.getSynapseConfiguration()).thenReturn(configuration);
         when(configuration.getSequence("process")).thenReturn(sequence);
@@ -121,13 +121,21 @@ class VFSConsumerPollTest {
                 return session;
             }
         };
+        return environment;
     }
 
     @Test
     void firstPollWaitsForEndpointRegistrationBeforeConsumingSeed() throws Exception {
         Path seed = write("a.xml", "<a/>", 1);
         properties.setProperty("transport.vfs.ActionAfterFailure", "DELETE");
-        deploy(folder.toUri().toString(), true);
+        SynapseEnvironment environment = deploy(folder.toUri().toString(), true);
+        when(environment.getSynapseConfiguration()).thenReturn(null);
+        consumer.poll();
+        assertEquals("<a/>", Files.readString(seed));
+        assertTrue(deliveries.isEmpty());
+        assertEquals(0L, consumer.getHealth().get("filesDone"));
+        assertEquals(0L, consumer.getHealth().get("filesFailed"));
+        when(environment.getSynapseConfiguration()).thenReturn(configuration);
         InboundEndpoint registered = configuration.getInboundEndpoint(endpoint);
         when(configuration.getInboundEndpoint(endpoint)).thenReturn(null);
         consumer.poll();
