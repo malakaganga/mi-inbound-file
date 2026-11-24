@@ -102,7 +102,7 @@ class VFSConsumerPollTest {
         });
         properties.setProperty(VFSConstants.TRANSPORT_FILE_FILE_URI, uri);
         properties.putIfAbsent("transport.vfs.ActionAfterProcess", "DELETE");
-        properties.setProperty("transport.vfs.ActionAfterFailure", "NONE");
+        properties.putIfAbsent("transport.vfs.ActionAfterFailure", "NONE");
         properties.setProperty("transport.vfs.ContentType", "application/xml");
         properties.setProperty("transport.vfs.Build", "true");
         consumer = new VFSConsumer(properties, endpoint, environment, 1000, "process", null, false, sequential) {
@@ -121,6 +121,48 @@ class VFSConsumerPollTest {
                 return session;
             }
         };
+    }
+
+    @Test
+    void firstPollWaitsForEndpointRegistrationBeforeConsumingSeed() throws Exception {
+        Path seed = write("a.xml", "<a/>", 1);
+        properties.setProperty("transport.vfs.ActionAfterFailure", "DELETE");
+        deploy(folder.toUri().toString(), true);
+        InboundEndpoint registered = configuration.getInboundEndpoint(endpoint);
+        when(configuration.getInboundEndpoint(endpoint)).thenReturn(null);
+        consumer.poll();
+        assertEquals("<a/>", Files.readString(seed));
+        assertTrue(deliveries.isEmpty());
+        when(configuration.getInboundEndpoint(endpoint)).thenReturn(registered);
+        consumer.poll();
+        consumer.poll();
+        assertEquals(List.of("/a.xml"), deliveries);
+        assertFalse(Files.exists(seed));
+    }
+
+    @Test
+    void destroyedConsumerWarnsOnceAfterRemovalAndCannotTakeReplacementWork() throws Exception {
+        deploy(folder.toUri().toString(), true);
+        VFSConsumer old = consumer;
+        old.destroy();
+        when(configuration.getInboundEndpoint(endpoint)).thenReturn(null);
+        Path seed = write("replacement.xml", "<replacement/>", 1);
+        try (Logs logs = new Logs()) {
+            old.poll();
+            old.poll();
+            assertEquals(1, logs.messages(Level.WARNING, endpoint, "polled while it is stopped").size());
+            assertEquals("<replacement/>", Files.readString(seed));
+
+            deploy(folder.toUri().toString(), true);
+            old.poll();
+            assertEquals("<replacement/>", Files.readString(seed));
+            assertTrue(deliveries.isEmpty());
+            consumer.poll();
+            old.poll();
+            consumer.poll();
+            assertEquals(List.of("/replacement.xml"), deliveries);
+            assertFalse(Files.exists(seed));
+        }
     }
 
     @AfterEach

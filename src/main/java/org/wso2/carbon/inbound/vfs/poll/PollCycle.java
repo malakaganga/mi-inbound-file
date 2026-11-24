@@ -67,7 +67,6 @@ public final class PollCycle {
     private final String clock;
     private final long interval;
     private boolean parentOwed = true;
-    private boolean absent;
     private long backoff;
     private long failedAt;
 
@@ -266,19 +265,16 @@ public final class PollCycle {
                     throw new IOException("The root type changed during the poll.");
                 }
             }
+            if (type == FileType.FOLDER || type == FileType.FILE) {
+                services.log.pollRootPresent(rootUri);
+            }
             if (type == FileType.FOLDER) {
-                absent = false;
                 list(root, "");
             } else {
                 String uri = singleFileUri(root);
                 FolderListing parent = parentOwed ? parentListing(root) : null;
                 if (type == FileType.IMAGINARY) {
-                    if (!absent) {
-                        services.log.warn("The poll root is absent. " + rootUri);
-                    } else {
-                        services.log.debug("The poll root is absent. " + rootUri);
-                    }
-                    absent = true;
+                    services.log.missingPollRoot(rootUri);
                     FailStateStore.SweepResult result = services.store.checkAbsentSingleFile(io(), uri, parent);
                     if (!swept(result)) {
                         return;
@@ -286,7 +282,6 @@ public final class PollCycle {
                     parentOwed = false;
                     services.locks.checkAbsentSingleFile(io(), uri);
                 } else if (type == FileType.FILE) {
-                    absent = false;
                     if (!reserved(root.getName().getBaseName(), false)) {
                         candidate(root, uri, metadata(root), "", parent);
                     }

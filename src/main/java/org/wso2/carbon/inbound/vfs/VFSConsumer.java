@@ -209,7 +209,10 @@ public class VFSConsumer extends GenericPollingConsumer {
         }
         if (generation != null) {
             try {
-                active.run(generation);
+                // The deployer can schedule this consumer before publishing its endpoint.
+                if (synapseEnvironment.getSynapseConfiguration().getInboundEndpoint(name) != null) {
+                    active.run(generation);
+                }
             } finally {
                 lifecycle.exitPoll(generation);
             }
