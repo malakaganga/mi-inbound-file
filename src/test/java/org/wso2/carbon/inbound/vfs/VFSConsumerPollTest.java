@@ -692,6 +692,34 @@ class VFSConsumerPollTest {
         }
     }
 
+    // The listing gives the named file with a content whose read of the time, or of the size, fails with no
+    // transport error, as on a server that sends no time or no size in its listing.
+    void listedWithout(String uri, String name, boolean time) {
+        setupSession = session -> doAnswer(call -> {
+            FileObject resolved = (FileObject) call.callRealMethod();
+            FileObject view = spy(resolved);
+            doAnswer(list -> {
+                FileObject[] children = resolved.getChildren();
+                for (int index = 0; index < children.length; index++) {
+                    if (children[index].getName().getBaseName().equals(name)) {
+                        FileObject child = spy(children[index]);
+                        FileContent content = spy(children[index].getContent());
+                        if (time) {
+                            doThrow(new FileSystemException("Last modification time not fetched."))
+                                    .when(content).getLastModifiedTime();
+                        } else {
+                            doThrow(new FileSystemException("Size not fetched.")).when(content).getSize();
+                        }
+                        doReturn(content).when(child).getContent();
+                        children[index] = child;
+                    }
+                }
+                return children;
+            }).when(view).getChildren();
+            return view;
+        }).when(session).resolve(eq(uri), any());
+    }
+
     // Some SFTP servers send no time for any file in a listing. The old transport took such a file. A parameter that
     // needs the time skips the file with a line that names it. The header carries the time 0, as an FTP listing
     // with no time gives today.
@@ -701,44 +729,32 @@ class VFSConsumerPollTest {
         // The file has no time of its own either, so the identity of the file has an unknown time too.
         Files.setLastModifiedTime(timeless, FileTime.fromMillis(0));
         String uri = folder.toUri().toString();
-        setupSession = session -> doAnswer(call -> {
-            FileObject resolved = (FileObject) call.callRealMethod();
-            FileObject view = spy(resolved);
-            doAnswer(list -> {
-                FileObject[] children = resolved.getChildren();
-                for (int index = 0; index < children.length; index++) {
-                    if (children[index].getName().getBaseName().equals("timeless.xml")) {
-                        FileObject child = spy(children[index]);
-                        FileContent content = spy(children[index].getContent());
-                        doThrow(new FileSystemException("Last modification time not fetched."))
-                                .when(content).getLastModifiedTime();
-                        doReturn(content).when(child).getContent();
-                        children[index] = child;
-                    }
-                }
-                return children;
-            }).when(view).getChildren();
-            return view;
-        }).when(session).resolve(eq(uri), any());
+        listedWithout(uri, "timeless.xml", true);
         List<Map<?, ?>> headers = Collections.synchronizedList(new ArrayList<>());
         mediation = message -> headers.add(new HashMap<>((Map<?, ?>) message.getAxis2MessageContext()
                 .getProperty(MessageContext.TRANSPORT_HEADERS)));
-        properties.setProperty(VFSConstants.TRANSPORT_FILE_MINIMUM_AGE, "1");
-        deploy(uri, true);
-        try (Logs logs = new Logs()) {
-            consumer.poll();
-            consumer.poll();
-            assertTrue(deliveries.isEmpty());
-            assertTrue(Files.exists(timeless));
-            List<String> warnings = logs.messages(Level.WARNING, endpoint, "does not give all the details of a file");
-            assertEquals(1, warnings.size());
-            assertTrue(warnings.get(0).contains("transport.vfs.MinimumAge needs the modified time"), warnings.get(0));
-            assertTrue(warnings.get(0).contains("timeless.xml"), warnings.get(0));
-        } finally {
-            close();
+        String[][] needing = {{VFSConstants.TRANSPORT_FILE_MINIMUM_AGE, "1"},
+                {VFSConstants.TRANSPORT_FILE_MAXIMUM_AGE, "3600"},
+                {VFSConstants.FILE_SORT_PARAM, VFSConstants.FILE_SORT_VALUE_LASTMODIFIEDTIMESTAMP}};
+        for (String[] parameter : needing) {
+            properties.setProperty(parameter[0], parameter[1]);
+            deploy(uri, true);
+            try (Logs logs = new Logs()) {
+                consumer.poll();
+                consumer.poll();
+                assertTrue(deliveries.isEmpty(), parameter[0]);
+                assertTrue(Files.exists(timeless));
+                List<String> warnings = logs.messages(Level.WARNING, endpoint,
+                        "does not give all the details of a file");
+                assertEquals(1, warnings.size(), parameter[0]);
+                assertTrue(warnings.get(0).contains(parameter[0] + " needs the modified time"), warnings.get(0));
+                assertTrue(warnings.get(0).contains("timeless.xml"), warnings.get(0));
+            } finally {
+                close();
+                properties.remove(parameter[0]);
+            }
         }
 
-        properties.remove(VFSConstants.TRANSPORT_FILE_MINIMUM_AGE);
         deploy(uri, true);
         try {
             consumer.poll();
@@ -747,6 +763,28 @@ class VFSConsumerPollTest {
             assertEquals(1, headers.size());
             assertEquals(0L, headers.get(0).get(VFSConstants.LAST_MODIFIED));
             assertEquals(11L, headers.get(0).get(VFSConstants.FILE_LENGTH));
+        } finally {
+            close();
+        }
+    }
+
+    // The old transport failed a file whose size could not be read. Such a listed file is skipped, with a line that
+    // names it.
+    @Test
+    void aListedFileWithNoSizeIsSkippedWithALine() throws Exception {
+        Path sizeless = write("sizeless.xml", "<sizeless/>", 1);
+        String uri = folder.toUri().toString();
+        listedWithout(uri, "sizeless.xml", false);
+        deploy(uri, true);
+        try (Logs logs = new Logs()) {
+            consumer.poll();
+            consumer.poll();
+            assertTrue(deliveries.isEmpty());
+            assertTrue(Files.exists(sizeless));
+            List<String> warnings = logs.messages(Level.WARNING, endpoint, "does not give all the details of a file");
+            assertEquals(1, warnings.size());
+            assertTrue(warnings.get(0).contains("the inbound needs the size"), warnings.get(0));
+            assertTrue(warnings.get(0).contains("sizeless.xml"), warnings.get(0));
         } finally {
             close();
         }

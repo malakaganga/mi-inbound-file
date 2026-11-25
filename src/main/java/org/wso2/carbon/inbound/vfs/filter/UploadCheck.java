@@ -57,7 +57,7 @@ public final class UploadCheck {
         long size;
         long modified;
         try (FileObject first = io.resolve(uri)) {
-            size = size(first);
+            size = first.getContent().getSize();
             modified = modified(first);
         }
         DigestResult first = FileDigest.of(io, uri);
@@ -66,7 +66,7 @@ public final class UploadCheck {
         }
         try (FileObject fresh = io.resolve(uri)) {
             fresh.refresh();
-            if (size != size(fresh) || modified != modified(fresh)) {
+            if (size != fresh.getContent().getSize() || modified != modified(fresh)) {
                 return new Result(false, null);
             }
         }
@@ -74,29 +74,17 @@ public final class UploadCheck {
         return new Result(second.kind == DigestResult.Kind.DONE && first.digest.equals(second.digest), second.failure);
     }
 
-    // A size or a time that the server does not send is unknown on both reads, and the digests decide alone, as in
-    // the old transport. A transport error is thrown as before.
-    private static long size(FileObject file) throws FileSystemException {
-        try {
-            return file.getContent().getSize();
-        } catch (FileSystemException unknown) {
-            return unknown(unknown, -1);
-        }
-    }
-
+    // A time that the server does not send is unknown on both reads. The size and the digests still decide, and the
+    // old transport used the digests alone. A transport error is thrown as before.
     private static long modified(FileObject file) throws FileSystemException {
         try {
             return file.getContent().getLastModifiedTime();
         } catch (FileSystemException unknown) {
-            return unknown(unknown, 0);
+            if (CLASSIFIER.classify(unknown, 0, ErrorClassifier.CallType.READ).getKind().isTransport()) {
+                throw unknown;
+            }
+            return 0;
         }
-    }
-
-    private static long unknown(FileSystemException failure, long value) throws FileSystemException {
-        if (CLASSIFIER.classify(failure, 0, ErrorClassifier.CallType.READ).getKind().isTransport()) {
-            throw failure;
-        }
-        return value;
     }
 
     private UploadCheck() {

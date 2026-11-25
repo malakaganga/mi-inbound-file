@@ -376,7 +376,8 @@ public final class PollCycle {
         }
 
         // The parts of a listing entry that can be read. A part that the server did not send stays unknown: -1 for
-        // the size and 0 for the time. Some SFTP servers send no time for any file.
+        // the size and 0 for the time. Some SFTP servers send no time for any file. The size is read only to know
+        // whether it is there.
         FolderListing.Metadata partial(FileObject file) throws FileSystemException {
             long size = -1;
             long modified = 0;
@@ -397,24 +398,17 @@ public final class PollCycle {
             return new FolderListing.Metadata(size, modified);
         }
 
-        // Which parameter needs a part of the entry that is unknown, or null when no parameter needs it.
+        // Why a file whose entry lacks a part is skipped, or null when it is taken. A file with no size is always
+        // skipped, because the old transport failed such a file. A file with no time is taken, as the old transport
+        // took it, unless a parameter needs the time.
         String needs(FolderListing.Metadata entry) {
-            String sort = config.getFileSortParam();
-            String parameter = null;
-            if (entry.modified == 0) {
-                parameter = config.getMinimumAge() != null ? TRANSPORT_FILE_MINIMUM_AGE
-                        : config.getMaximumAge() != null ? TRANSPORT_FILE_MAXIMUM_AGE
-                        : FILE_SORT_VALUE_LASTMODIFIEDTIMESTAMP.equals(sort) ? FILE_SORT_PARAM : null;
-                if (parameter != null) {
-                    return parameter + " needs the modified time";
-                }
-            }
             if (entry.size < 0) {
-                parameter = config.getFileSizeLimit() >= 0 ? TRANSPORT_FILE_SIZE_LIMIT
-                        : config.getCheckSizeIgnoreEmpty() ? TRANSPORT_CHECK_SIZE_IGNORE_EMPTY
-                        : FILE_SORT_VALUE_SIZE.equals(sort) ? FILE_SORT_PARAM : null;
+                return "the inbound needs the size";
             }
-            return parameter == null ? null : parameter + " needs the size";
+            String parameter = config.getMinimumAge() != null ? TRANSPORT_FILE_MINIMUM_AGE
+                    : config.getMaximumAge() != null ? TRANSPORT_FILE_MAXIMUM_AGE
+                    : FILE_SORT_VALUE_LASTMODIFIEDTIMESTAMP.equals(config.getFileSortParam()) ? FILE_SORT_PARAM : null;
+            return entry.modified == 0 && parameter != null ? parameter + " needs the modified time" : null;
         }
 
         void list(FileObject folder, String relative) throws IOException {
@@ -468,8 +462,9 @@ public final class PollCycle {
                         present.add(child.getName().getURI());
                         services.log.debug("Could not read the metadata for " + child.getName().getURI());
                         if (!reserved(name, false)) {
-                            // The old transport took such a file. It is taken unless a parameter needs what is
-                            // missing, and then a line names the file and the parameter.
+                            // The old transport took a file with no time, so it is taken unless a parameter needs the
+                            // time. A file with no size is skipped, as the old transport failed it. A skipped file
+                            // gets a line that names it.
                             entry = partial(child);
                             String reason = needs(entry);
                             if (reason == null) {
