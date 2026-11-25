@@ -196,6 +196,8 @@ public class FileInjectHandler {
 
             InboundEndpoint inboundEndpoint = msgCtx.getConfiguration().getInboundEndpoint(name);
             CustomLogSetter.getInstance().setLogAppender(inboundEndpoint.getArtifactContainerName());
+            MessageContext axis2MsgCtx = ((org.apache.synapse.core.axis2.Axis2MessageContext) msgCtx)
+                    .getAxis2MessageContext();
             String contentType = vfsProperties.getContentType();
             if (contentType == null || contentType.trim().equals("")) {
                 if (file.getName().getExtension().toLowerCase().endsWith("xml")) {
@@ -212,13 +214,14 @@ public class FileInjectHandler {
                 } catch (ParseException ex) {
                     // ignore
                 }
+                // The builder and the formatter read the charset from the axis2 context, where the transport listener
+                // sets it. The Synapse context keeps it as well, for a flow that reads it there.
+                axis2MsgCtx.setProperty(Constants.Configuration.CHARACTER_SET_ENCODING, charSetEnc);
                 msgCtx.setProperty(Constants.Configuration.CHARACTER_SET_ENCODING, charSetEnc);
             }
             if (log.isDebugEnabled()) {
                 log.debug("Processed file " + UriMask.friendly(file.getName()) + " with content type " + contentType);
             }
-            MessageContext axis2MsgCtx = ((org.apache.synapse.core.axis2.Axis2MessageContext) msgCtx)
-                    .getAxis2MessageContext();
             // Determine the message builder to use
             Builder builder;
             if (contentType == null) {

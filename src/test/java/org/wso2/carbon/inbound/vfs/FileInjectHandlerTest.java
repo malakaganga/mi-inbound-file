@@ -16,10 +16,17 @@
 package org.wso2.carbon.inbound.vfs;
 
 import org.apache.axiom.soap.SOAPEnvelope;
+import org.apache.axis2.Constants;
 import org.apache.axis2.builder.ApplicationXMLBuilder;
 import org.apache.axis2.context.ConfigurationContext;
 import org.apache.axis2.context.MessageContext;
 import org.apache.axis2.engine.AxisConfiguration;
+import org.apache.axis2.format.PlainTextBuilder;
+import org.apache.axis2.format.PlainTextFormatter;
+import org.apache.axis2.transport.MessageFormatter;
+import org.apache.axis2.transport.base.BaseUtils;
+import org.apache.axis2.transport.http.ApplicationXMLFormatter;
+import org.apache.axis2.transport.http.SOAPMessageFormatter;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.synapse.config.SynapseConfiguration;
@@ -47,6 +54,8 @@ import org.wso2.vfs.shared.log.NamedLog;
 import org.wso2.vfs.shared.log.RepeatLimiter;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -56,6 +65,7 @@ import java.util.List;
 import java.util.Properties;
 import java.util.stream.Stream;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -247,5 +257,75 @@ class FileInjectHandlerTest {
             assertNull(files.readFailure());
             return result;
         }
+    }
+
+    // A type with a charset, as the transport listener reads it. The charset is on the axis2 context, where the
+    // builder and the formatter read it, so the file is decoded with it and written in it again. A type with no
+    // charset leaves it unset, and the content is UTF-8.
+    @ParameterizedTest
+    @CsvSource({"text/plain,ISO-8859-1,false", "text/plain,ISO-8859-1,true", "text/plain,UTF-16,false",
+            "text/plain,UTF-16,true", "application/xml,ISO-8859-1,false", "application/xml,ISO-8859-1,true",
+            "application/xml,UTF-16,false", "application/xml,UTF-16,true", "text/xml,ISO-8859-1,false",
+            "text/xml,ISO-8859-1,true", "text/xml,UTF-16,false", "text/xml,UTF-16,true", "text/plain,'',false",
+            "text/plain,'',true", "application/xml,'',true", "text/xml,'',true"})
+    void charsetOfTheTypeIsOnTheAxis2Context(String type, String charset, boolean build) throws Exception {
+        Charset encoding = charset.isEmpty() ? StandardCharsets.UTF_8 : Charset.forName(charset);
+        String text = "caf\u00e9 \u00fcber";
+        String envelope = "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body><a>" + text
+                + "</a></s:Body></s:Envelope>";
+        String content = "text/plain".equals(type) ? text : "text/xml".equals(type) ? envelope : "<a>" + text + "</a>";
+        Path file = Files.write(folder.resolve("c.dat"), content.getBytes(encoding));
+        Properties properties = new Properties();
+        properties.setProperty(VFSConstants.TRANSPORT_FILE_FILE_URI, folder.toUri().toString());
+        properties.setProperty(VFSConstants.TRANSPORT_FILE_CONTENT_TYPE,
+                charset.isEmpty() ? type : type + "; charset=" + charset);
+        properties.setProperty(VFSConstants.TRANSPORT_BUILD, String.valueOf(build));
+        SynapseConfiguration configuration = mock(SynapseConfiguration.class);
+        SynapseEnvironment environment = mock(SynapseEnvironment.class);
+        SequenceMediator sequence = mock(SequenceMediator.class);
+        when(environment.getSynapseConfiguration()).thenReturn(configuration);
+        when(sequence.isInitialized()).thenReturn(true);
+        InboundEndpoint inbound = mock(InboundEndpoint.class);
+        when(inbound.getArtifactContainerName()).thenReturn(ENDPOINT);
+        when(configuration.getInboundEndpoint(ENDPOINT)).thenReturn(inbound);
+        AxisConfiguration axis = new AxisConfiguration();
+        axis.addMessageBuilder("application/xml", new ApplicationXMLBuilder());
+        axis.addMessageBuilder("text/plain", new PlainTextBuilder());
+        ConfigurationContext context = new ConfigurationContext(axis);
+        when(environment.createMessageContext()).thenAnswer(call -> {
+            MessageContext message = new MessageContext();
+            message.setConfigurationContext(context);
+            return new Axis2MessageContext(message, configuration, environment);
+        });
+        MessageFormatter formatter = "text/plain".equals(type) ? new PlainTextFormatter()
+                : "text/xml".equals(type) ? new SOAPMessageFormatter() : new ApplicationXMLFormatter();
+        List<Object> property = new ArrayList<>();
+        ByteArrayOutputStream written = new ByteArrayOutputStream();
+        when(environment.injectInbound(any(), same(sequence), eq(true))).thenAnswer(call -> {
+            MessageContext message = ((Axis2MessageContext) call.getArgument(0)).getAxis2MessageContext();
+            property.add(message.getProperty(Constants.Configuration.CHARACTER_SET_ENCODING));
+            formatter.writeTo(message, BaseUtils.getOMOutputFormat(message), written, false);
+            return true;
+        });
+        FailStateStore store = mock(FailStateStore.class);
+        when(store.digesting(any(), any(), any())).thenAnswer(call ->
+                new DigestingInputStream(call.getArgument(0), call.getArgument(1), call.getArgument(2)));
+        NamedLog log = NamedLog.inbound(LogFactory.getLog(FileInjectHandlerTest.class), ENDPOINT, new RepeatLimiter());
+        FileObject source = VFS.getManager().resolveFile(file.toUri().toString());
+        FileIdentity identity = new FileIdentity(source.getName().getURI(), Files.size(file),
+                Files.getLastModifiedTime(file).toMillis(), FileIdentity.TimeSource.LISTING, null);
+        FileInjectHandler handler = new FileInjectHandler("process", null, environment, new VFSConfig(properties));
+        try (FileInjectHandler.Content files = new FileInjectHandler.Content(source, identity, store,
+                mock(Generation.class), mock(VfsSession.class), ENDPOINT, mock(ReplySender.class), log)) {
+            assertTrue(handler.invoke(sequence, ENDPOINT, new HashMap<>(), files));
+        } finally {
+            source.close();
+        }
+        assertEquals(1, property.size());
+        assertEquals(charset.isEmpty() ? null : charset, property.get(0));
+        String declaration = "text/xml".equals(type)
+                ? "<?xml version='1.0' encoding='" + (charset.isEmpty() ? "UTF-8" : charset) + "'?>" : "";
+        assertArrayEquals((declaration + content).getBytes(encoding), written.toByteArray(),
+                new String(written.toByteArray(), encoding));
     }
 }
