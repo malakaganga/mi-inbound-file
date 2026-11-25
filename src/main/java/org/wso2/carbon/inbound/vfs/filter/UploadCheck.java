@@ -18,15 +18,23 @@
 
 package org.wso2.carbon.inbound.vfs.filter;
 
+import org.apache.commons.logging.LogFactory;
 import org.wso2.org.apache.commons.vfs2.FileObject;
+import org.wso2.org.apache.commons.vfs2.FileSystemException;
 import org.wso2.vfs.shared.error.Classification;
+import org.wso2.vfs.shared.error.ErrorClassifier;
 import org.wso2.vfs.shared.failstate.DigestResult;
 import org.wso2.vfs.shared.failstate.FileDigest;
 import org.wso2.vfs.shared.lock.LockIo;
+import org.wso2.vfs.shared.log.NamedLog;
+import org.wso2.vfs.shared.log.RepeatLimiter;
 
 import java.io.IOException;
 
 public final class UploadCheck {
+    private static final ErrorClassifier CLASSIFIER = new ErrorClassifier(NamedLog.inbound(
+            LogFactory.getLog(UploadCheck.class), "upload", new RepeatLimiter()));
+
     public interface Wait {
         boolean await(long millis) throws InterruptedException;
     }
@@ -49,8 +57,8 @@ public final class UploadCheck {
         long size;
         long modified;
         try (FileObject first = io.resolve(uri)) {
-            size = first.getContent().getSize();
-            modified = first.getContent().getLastModifiedTime();
+            size = size(first);
+            modified = modified(first);
         }
         DigestResult first = FileDigest.of(io, uri);
         if (first.kind != DigestResult.Kind.DONE || !wait.await(interval)) {
@@ -58,12 +66,37 @@ public final class UploadCheck {
         }
         try (FileObject fresh = io.resolve(uri)) {
             fresh.refresh();
-            if (size != fresh.getContent().getSize() || modified != fresh.getContent().getLastModifiedTime()) {
+            if (size != size(fresh) || modified != modified(fresh)) {
                 return new Result(false, null);
             }
         }
         DigestResult second = FileDigest.of(io, uri);
         return new Result(second.kind == DigestResult.Kind.DONE && first.digest.equals(second.digest), second.failure);
+    }
+
+    // A size or a time that the server does not send is unknown on both reads, and the digests decide alone, as in
+    // the old transport. A transport error is thrown as before.
+    private static long size(FileObject file) throws FileSystemException {
+        try {
+            return file.getContent().getSize();
+        } catch (FileSystemException unknown) {
+            return unknown(unknown, -1);
+        }
+    }
+
+    private static long modified(FileObject file) throws FileSystemException {
+        try {
+            return file.getContent().getLastModifiedTime();
+        } catch (FileSystemException unknown) {
+            return unknown(unknown, 0);
+        }
+    }
+
+    private static long unknown(FileSystemException failure, long value) throws FileSystemException {
+        if (CLASSIFIER.classify(failure, 0, ErrorClassifier.CallType.READ).getKind().isTransport()) {
+            throw failure;
+        }
+        return value;
     }
 
     private UploadCheck() {

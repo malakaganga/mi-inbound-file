@@ -32,6 +32,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.wso2.carbon.inbound.vfs.conn.VfsSession;
+import org.wso2.org.apache.commons.vfs2.FileContent;
 import org.wso2.org.apache.commons.vfs2.FileName;
 import org.wso2.org.apache.commons.vfs2.FileObject;
 import org.wso2.org.apache.commons.vfs2.FileSystemException;
@@ -50,6 +51,7 @@ import java.nio.file.attribute.FileTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -687,6 +689,66 @@ class VFSConsumerPollTest {
             assertEquals("<c/>", Files.readString(waiting));
             assertEquals("<refused/>", Files.readString(refused));
             assertTrue(logs.messages(Level.WARNING, endpoint, "Could not read the type of a listed file").isEmpty());
+        }
+    }
+
+    // Some SFTP servers send no time for any file in a listing. The old transport took such a file. A parameter that
+    // needs the time skips the file with a line that names it. The header carries the time 0, as an FTP listing
+    // with no time gives today.
+    @Test
+    void aListedFileWithNoTimeIsTakenUnlessAParameterNeedsTheTime() throws Exception {
+        Path timeless = write("timeless.xml", "<timeless/>", 1);
+        // The file has no time of its own either, so the identity of the file has an unknown time too.
+        Files.setLastModifiedTime(timeless, FileTime.fromMillis(0));
+        String uri = folder.toUri().toString();
+        setupSession = session -> doAnswer(call -> {
+            FileObject resolved = (FileObject) call.callRealMethod();
+            FileObject view = spy(resolved);
+            doAnswer(list -> {
+                FileObject[] children = resolved.getChildren();
+                for (int index = 0; index < children.length; index++) {
+                    if (children[index].getName().getBaseName().equals("timeless.xml")) {
+                        FileObject child = spy(children[index]);
+                        FileContent content = spy(children[index].getContent());
+                        doThrow(new FileSystemException("Last modification time not fetched."))
+                                .when(content).getLastModifiedTime();
+                        doReturn(content).when(child).getContent();
+                        children[index] = child;
+                    }
+                }
+                return children;
+            }).when(view).getChildren();
+            return view;
+        }).when(session).resolve(eq(uri), any());
+        List<Map<?, ?>> headers = Collections.synchronizedList(new ArrayList<>());
+        mediation = message -> headers.add(new HashMap<>((Map<?, ?>) message.getAxis2MessageContext()
+                .getProperty(MessageContext.TRANSPORT_HEADERS)));
+        properties.setProperty(VFSConstants.TRANSPORT_FILE_MINIMUM_AGE, "1");
+        deploy(uri, true);
+        try (Logs logs = new Logs()) {
+            consumer.poll();
+            consumer.poll();
+            assertTrue(deliveries.isEmpty());
+            assertTrue(Files.exists(timeless));
+            List<String> warnings = logs.messages(Level.WARNING, endpoint, "does not give all the details of a file");
+            assertEquals(1, warnings.size());
+            assertTrue(warnings.get(0).contains("transport.vfs.MinimumAge needs the modified time"), warnings.get(0));
+            assertTrue(warnings.get(0).contains("timeless.xml"), warnings.get(0));
+        } finally {
+            close();
+        }
+
+        properties.remove(VFSConstants.TRANSPORT_FILE_MINIMUM_AGE);
+        deploy(uri, true);
+        try {
+            consumer.poll();
+            assertEquals(List.of("/timeless.xml"), deliveries);
+            assertFalse(Files.exists(timeless));
+            assertEquals(1, headers.size());
+            assertEquals(0L, headers.get(0).get(VFSConstants.LAST_MODIFIED));
+            assertEquals(11L, headers.get(0).get(VFSConstants.FILE_LENGTH));
+        } finally {
+            close();
         }
     }
 
