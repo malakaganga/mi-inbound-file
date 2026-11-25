@@ -289,7 +289,8 @@ public class FileInjectHandler {
             }
             // With FailOnErrorCode the error code that the connector or the fault handler put on the message fails the
             // file. A flow that handled the error removes it. The flow is seen as it gives back this thread. A fault in
-            // a branch of an iterate or of a parallel clone is on a copy of the message and is not seen.
+            // a branch of a scatter gather, a foreach with a collection, an iterate or a parallel clone is on a copy of
+            // the message and is not seen.
             Object code = msgCtx.getProperty(SynapseConstants.ERROR_CODE);
             if (vfsProperties.isFailOnErrorCode() && failedBy(code)) {
                 log.error("File mediation failed for " + UriMask.friendly(file.getName()) + ". The flow ended with "

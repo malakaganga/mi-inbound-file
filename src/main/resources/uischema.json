@@ -321,7 +321,7 @@
               "inputType": "checkbox",
               "defaultValue": false,
               "required": "false",
-              "helpTip": "When true, a file whose flow ends with the ERROR_CODE property takes the action after failure, also when the error sequence handled the fault. A flow that recovers from an error removes ERROR_CODE, else the file fails. A fault after a non blocking call is not seen, so a call whose fault must decide the file needs blocking true. A fault in a branch of an iterate, or of a clone that runs its branches in parallel, is on a copy of the message and is not seen either. A flow that writes one file to several targets and wants each failure to decide the file does the writes one after the other in the same sequence. When false, a fault that the error sequence handles leaves the file processed, as on the transport."
+              "helpTip": "When true, a file whose flow ends with the ERROR_CODE property takes the action after failure, also when the error sequence handled the fault. A flow that recovers from an error removes ERROR_CODE, else the file fails. A fault after a non blocking call is not seen, so a call whose fault must decide the file needs blocking true. A fault in a branch of a scatter gather, a foreach with a collection, an iterate, or a clone that runs its branches in parallel, is on a copy of the message and is not seen either. A flow that writes one file to several targets runs the writes on the message of the file, not on copies. When false, a fault that the error sequence handles leaves the file processed, as on the transport."
             }
           },
           {

@@ -37,6 +37,8 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.synapse.SynapseConstants;
 import org.apache.synapse.SynapseException;
+import org.apache.synapse.commons.json.JsonStreamBuilder;
+import org.apache.synapse.config.xml.MediatorFactoryFinder;
 import org.apache.synapse.config.xml.SequenceMediatorFactory;
 import org.apache.synapse.config.SynapseConfiguration;
 import org.apache.synapse.core.SynapseEnvironment;
@@ -47,6 +49,8 @@ import org.apache.synapse.mediators.AbstractMediator;
 import org.apache.synapse.mediators.eip.Target;
 import org.apache.synapse.mediators.eip.splitter.CloneMediator;
 import org.apache.synapse.mediators.eip.splitter.IterateMediator;
+import org.apache.synapse.mediators.v2.ForEachMediatorV2;
+import org.apache.synapse.mediators.v2.ScatterGather;
 import org.apache.synapse.util.xpath.SynapseXPath;
 import org.apache.synapse.mediators.base.SequenceMediator;
 import org.junit.jupiter.api.Tag;
@@ -479,6 +483,7 @@ class FileInjectHandlerTest {
         }
         AxisConfiguration axis = new AxisConfiguration();
         axis.addMessageBuilder("application/xml", new ApplicationXMLBuilder());
+        axis.addMessageBuilder("application/json", new JsonStreamBuilder());
         ConfigurationContext context = new ConfigurationContext(axis);
         when(environment.createMessageContext()).thenAnswer(call -> {
             MessageContext message = new MessageContext();
@@ -626,6 +631,39 @@ class FileInjectHandlerTest {
         assertEquals("0", String.valueOf(run.message.getProperty(SynapseConstants.ERROR_CODE)));
         assertEquals("yes", run.message.getProperty("handled"));
         assertNull(run.message.getProperty("passed"));
+    }
+
+    // A scatter gather and a foreach with a collection give each branch a copy of the message, and a branch handles its
+    // fault there. The message of the file carries no error code, so the file is processed, also with FailOnErrorCode.
+    // Both run their branches one after the other here, so the fault happens on the poll thread.
+    @ParameterizedTest
+    @CsvSource({"SCATTER_GATHER", "FOREACH"})
+    void aFaultInABranchOfAScatterGatherOrAForeachIsNotSeen(String kind) throws Exception {
+        boolean scatter = "SCATTER_GATHER".equals(kind);
+        Properties extra = new Properties();
+        extra.setProperty(VFSConstants.TRANSPORT_FAIL_ON_ERROR_CODE, "true");
+        String xml = scatter
+                ? "<scatter-gather xmlns=\"http://ws.apache.org/ns/synapse\" parallel-execution=\"false\" "
+                + "target=\"body\" result-content-type=\"JSON\"><aggregation expression=\"${payload}\"/>"
+                + "<sequence/><sequence/></scatter-gather>"
+                : "<foreach xmlns=\"http://ws.apache.org/ns/synapse\" collection=\"${xpath('//i')}\" "
+                + "parallel-execution=\"false\" update-original=\"true\"><sequence/></foreach>";
+        AbstractMediator branches = (AbstractMediator) MediatorFactoryFinder.getInstance()
+                .getMediator(AXIOMUtil.stringToOM(xml), new Properties());
+        Target first = branches instanceof ScatterGather ? ((ScatterGather) branches).getTargets().get(0)
+                : ((ForEachMediatorV2) branches).getTarget();
+        first.getSequence().addChild(new FailingOperation("700101"));
+        Map<String, String> sequences = new HashMap<>();
+        sequences.put("error", errorSequence(""));
+        Engine run = mediate(extra, scatter ? "application/json" : "application/xml",
+                scatter ? "{\"items\":[{\"n\":1},{\"n\":2}]}" : "<a><i>1</i><i>2</i></a>", sequences,
+                NamedLog.inbound(LogFactory.getLog(FileInjectHandlerTest.class), ENDPOINT, new RepeatLimiter()),
+                branches, new Passing());
+        String state = "code " + run.message.getProperty(SynapseConstants.ERROR_CODE) + ", message "
+                + run.message.getProperty(SynapseConstants.ERROR_MESSAGE);
+        assertTrue(run.processed, state);
+        assertNull(run.message.getProperty(SynapseConstants.ERROR_CODE), state);
+        assertNull(run.message.getProperty("handled"), state);
     }
 
     // A branch that runs on the poll thread and fails as a file connector operation fails.
