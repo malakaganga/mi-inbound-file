@@ -18,8 +18,10 @@
 
 package org.wso2.carbon.inbound.vfs;
 
+import org.apache.axiom.om.OMAbstractFactory;
 import org.apache.axiom.om.OMElement;
 import org.apache.axiom.om.util.UUIDGenerator;
+import org.apache.axis2.AxisFault;
 import org.apache.axis2.Constants;
 import org.apache.axis2.builder.Builder;
 import org.apache.axis2.builder.BuilderUtil;
@@ -292,10 +294,15 @@ public class FileInjectHandler {
         }
     }
 
-    private org.apache.synapse.MessageContext createMessageContext(Map<String, Object> transportHeaders) {
+    private org.apache.synapse.MessageContext createMessageContext(Map<String, Object> transportHeaders)
+            throws AxisFault {
         org.apache.synapse.MessageContext msgCtx = synapseEnvironment.createMessageContext();
         MessageContext axis2MsgCtx = ((org.apache.synapse.core.axis2.Axis2MessageContext) msgCtx)
                 .getAxis2MessageContext();
+        // Synapse gives a new message a SOAP 1.2 envelope. The transport listener builds on a new axis2 message, which
+        // is SOAP 1.1, so a builder that asks the message for its version builds SOAP 1.1 there. The message is SOAP
+        // 1.1 until the file is built, as on the transport, and a SOAP 1.2 file keeps its own version.
+        axis2MsgCtx.setEnvelope(OMAbstractFactory.getSOAP11Factory().getDefaultEnvelope());
         axis2MsgCtx.setServerSide(true);
         axis2MsgCtx.setMessageID(UUIDGenerator.getUUID());
         axis2MsgCtx.setProperty(TRANSPORT_HEADERS, transportHeaders);

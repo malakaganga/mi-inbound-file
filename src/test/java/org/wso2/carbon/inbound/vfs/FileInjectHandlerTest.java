@@ -15,9 +15,14 @@
  */
 package org.wso2.carbon.inbound.vfs;
 
+import org.apache.axiom.om.OMAbstractFactory;
+import org.apache.axiom.om.OMElement;
 import org.apache.axiom.soap.SOAPEnvelope;
+import org.apache.axiom.soap.SOAPFactory;
 import org.apache.axis2.Constants;
+import org.apache.axis2.AxisFault;
 import org.apache.axis2.builder.ApplicationXMLBuilder;
+import org.apache.axis2.builder.Builder;
 import org.apache.axis2.context.ConfigurationContext;
 import org.apache.axis2.context.MessageContext;
 import org.apache.axis2.engine.AxisConfiguration;
@@ -54,6 +59,8 @@ import org.wso2.vfs.shared.log.NamedLog;
 import org.wso2.vfs.shared.log.RepeatLimiter;
 
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
@@ -327,5 +334,82 @@ class FileInjectHandlerTest {
                 ? "<?xml version='1.0' encoding='" + (charset.isEmpty() ? "UTF-8" : charset) + "'?>" : "";
         assertArrayEquals((declaration + content).getBytes(encoding), written.toByteArray(),
                 new String(written.toByteArray(), encoding));
+    }
+
+    // A new message of Synapse has a SOAP 1.2 envelope, as Axis2SynapseEnvironment gives it. The file is built as on
+    // the transport, on a SOAP 1.1 message. So the relay builder of the pack, which asks the message for its version,
+    // builds SOAP 1.1 under application/octet-stream and application/pdf. A SOAP file keeps its own version.
+    @ParameterizedTest
+    @CsvSource({"application/octet-stream,bytes,http://schemas.xmlsoap.org/soap/envelope/",
+            "application/pdf,bytes,http://schemas.xmlsoap.org/soap/envelope/",
+            "application/soap+xml,http://www.w3.org/2003/05/soap-envelope,http://www.w3.org/2003/05/soap-envelope",
+            "text/xml,http://schemas.xmlsoap.org/soap/envelope/,http://schemas.xmlsoap.org/soap/envelope/"})
+    void fileIsBuiltOnASoap11Message(String type, String content, String namespace) throws Exception {
+        String text = content.startsWith("http") ? "<s:Envelope xmlns:s=\"" + content + "\"><s:Body><a/></s:Body>"
+                + "</s:Envelope>" : "some bytes";
+        Path file = Files.write(folder.resolve("f.dat"), text.getBytes(StandardCharsets.UTF_8));
+        Properties properties = new Properties();
+        properties.setProperty(VFSConstants.TRANSPORT_FILE_FILE_URI, folder.toUri().toString());
+        properties.setProperty(VFSConstants.TRANSPORT_FILE_CONTENT_TYPE, type);
+        SynapseConfiguration configuration = mock(SynapseConfiguration.class);
+        SynapseEnvironment environment = mock(SynapseEnvironment.class);
+        SequenceMediator sequence = mock(SequenceMediator.class);
+        when(environment.getSynapseConfiguration()).thenReturn(configuration);
+        when(sequence.isInitialized()).thenReturn(true);
+        InboundEndpoint inbound = mock(InboundEndpoint.class);
+        when(inbound.getArtifactContainerName()).thenReturn(ENDPOINT);
+        when(configuration.getInboundEndpoint(ENDPOINT)).thenReturn(inbound);
+        AxisConfiguration axis = new AxisConfiguration();
+        axis.addMessageBuilder("application/octet-stream", new RelayLikeBuilder());
+        axis.addMessageBuilder("application/pdf", new RelayLikeBuilder());
+        ConfigurationContext context = new ConfigurationContext(axis);
+        when(environment.createMessageContext()).thenAnswer(call -> {
+            MessageContext message = new MessageContext();
+            message.setConfigurationContext(context);
+            message.setEnvelope(OMAbstractFactory.getSOAP12Factory().getDefaultEnvelope());
+            return new Axis2MessageContext(message, configuration, environment);
+        });
+        List<SOAPEnvelope> injected = new ArrayList<>();
+        when(environment.injectInbound(any(), same(sequence), eq(true))).thenAnswer(call -> {
+            injected.add(((Axis2MessageContext) call.getArgument(0)).getEnvelope());
+            return true;
+        });
+        FailStateStore store = mock(FailStateStore.class);
+        when(store.digesting(any(), any(), any())).thenAnswer(call ->
+                new DigestingInputStream(call.getArgument(0), call.getArgument(1), call.getArgument(2)));
+        NamedLog log = NamedLog.inbound(LogFactory.getLog(FileInjectHandlerTest.class), ENDPOINT, new RepeatLimiter());
+        FileObject source = VFS.getManager().resolveFile(file.toUri().toString());
+        FileIdentity identity = new FileIdentity(source.getName().getURI(), Files.size(file),
+                Files.getLastModifiedTime(file).toMillis(), FileIdentity.TimeSource.LISTING, null);
+        FileInjectHandler handler = new FileInjectHandler("process", null, environment, new VFSConfig(properties));
+        try (FileInjectHandler.Content files = new FileInjectHandler.Content(source, identity, store,
+                mock(Generation.class), mock(VfsSession.class), ENDPOINT, mock(ReplySender.class), log)) {
+            assertTrue(handler.invoke(sequence, ENDPOINT, new HashMap<>(), files));
+        } finally {
+            source.close();
+        }
+        assertEquals(1, injected.size());
+        assertEquals(namespace, injected.get(0).getNamespace().getNamespaceURI());
+    }
+
+    // Builds as the relay builder of the pack does (org.wso2.carbon.relay.BinaryRelayBuilder): the envelope takes the
+    // SOAP version of the message, with the content in a binary element.
+    private static final class RelayLikeBuilder implements Builder {
+        @Override
+        public OMElement processDocument(InputStream input, String type, MessageContext message) throws AxisFault {
+            try {
+                while (input.read() >= 0) {
+                    // The content is read and dropped. The test looks at the envelope only.
+                }
+            } catch (IOException failure) {
+                throw AxisFault.makeFault(failure);
+            }
+            SOAPFactory factory = message.isSOAP11() ? OMAbstractFactory.getSOAP11Factory()
+                    : OMAbstractFactory.getSOAP12Factory();
+            SOAPEnvelope envelope = factory.getDefaultEnvelope();
+            envelope.getBody().addChild(factory.createOMElement("binary",
+                    factory.createOMNamespace("http://ws.apache.org/commons/ns/payload", "ns")));
+            return envelope;
+        }
     }
 }
