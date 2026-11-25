@@ -32,6 +32,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.wso2.carbon.inbound.vfs.conn.VfsSession;
+import org.wso2.org.apache.commons.vfs2.FileName;
 import org.wso2.org.apache.commons.vfs2.FileObject;
 import org.wso2.org.apache.commons.vfs2.FileSystemException;
 import org.wso2.org.apache.commons.vfs2.provider.Fault;
@@ -686,6 +687,79 @@ class VFSConsumerPollTest {
             assertEquals("<c/>", Files.readString(waiting));
             assertEquals("<refused/>", Files.readString(refused));
             assertTrue(logs.messages(Level.WARNING, endpoint, "Could not read the type of a listed file").isEmpty());
+        }
+    }
+
+    String undecodableWarning(boolean sftp) {
+        return "[inbound:" + endpoint + "] A file name in file://" + folder + " holds a character that could not be"
+                + " decoded as UTF-8. If such a file is never taken, the server uses another encoding for file names."
+                + (sftp ? " Set fileNameEncoding in the address, for example fileNameEncoding=ISO-8859-1." : "");
+    }
+
+    // A client that can not decode a name lists it with the replacement character. A local file name can hold that
+    // character itself, so the file is still taken, and the line names only the folder.
+    @Test
+    void undecodableNameWarnsOnceForTheFolderAndTheFileIsStillTaken() throws Exception {
+        write("clean.xml", "<clean/>", 1);
+        deploy(folder.toUri().toString(), true);
+        try (Logs logs = new Logs()) {
+            consumer.poll();
+            assertEquals(List.of("/clean.xml"), deliveries);
+            assertTrue(logs.messages(Level.WARNING, endpoint, "could not be decoded").isEmpty());
+
+            Path replaced = write("caf\uFFFD.xml", "<replaced/>", 1);
+            consumer.poll();
+            assertEquals(List.of("/clean.xml", "/caf\uFFFD.xml"), deliveries);
+            assertFalse(Files.exists(replaced));
+            assertEquals(List.of(undecodableWarning(false)),
+                    logs.messages(Level.WARNING, endpoint, "could not be decoded"));
+        }
+    }
+
+    // Each read of the repeat clock is six minutes after the one before, so the repeat limit holds no line back.
+    @Test
+    void manyUndecodableNamesInOneFolderGiveOneWarningPerPoll() throws Exception {
+        Path first = write("one\uFFFD.xml", "<one/>", 1);
+        Path second = write("two\uFFFD.xml", "<two/>", 1);
+        write("plain.xml", "<plain/>", 1);
+        deploy(folder.toUri().toString(), true);
+        AtomicLong clock = new AtomicLong();
+        try (Logs logs = new Logs();
+                MockedStatic<TestPoints> clocks = mockStatic(TestPoints.class, CALLS_REAL_METHODS)) {
+            clocks.when(() -> TestPoints.nanoTime("repeat")).thenAnswer(call ->
+                    clock.addAndGet(TimeUnit.MINUTES.toNanos(6)));
+            consumer.poll();
+            assertEquals(Set.of("/one\uFFFD.xml", "/two\uFFFD.xml", "/plain.xml"), new HashSet<>(deliveries));
+            assertEquals(3, deliveries.size());
+            assertFalse(Files.exists(first));
+            assertFalse(Files.exists(second));
+            assertEquals(List.of(undecodableWarning(false)),
+                    logs.messages(Level.WARNING, endpoint, "could not be decoded"));
+        }
+    }
+
+    // Only the name of the listed folder reports the sftp scheme. The files are still read from the local folder.
+    @Test
+    void undecodableNameOnAnSftpFolderNamesTheFileNameEncodingOption() throws Exception {
+        Path replaced = write("caf\uFFFD.xml", "<replaced/>", 1);
+        String uri = folder.toUri().toString();
+        setupSession = session -> doAnswer(call -> {
+            FileObject resolved = (FileObject) call.callRealMethod();
+            FileObject view = spy(resolved);
+            FileName name = spy(resolved.getName());
+            doReturn("sftp").when(name).getScheme();
+            doReturn(resolved.getName().getURI()).when(name).getURI();
+            doReturn(name).when(view).getName();
+            doAnswer(list -> resolved.getChildren()).when(view).getChildren();
+            return view;
+        }).when(session).resolve(eq(uri), any());
+        deploy(uri, true);
+        try (Logs logs = new Logs()) {
+            consumer.poll();
+            assertEquals(List.of("/caf\uFFFD.xml"), deliveries);
+            assertFalse(Files.exists(replaced));
+            assertEquals(List.of(undecodableWarning(true)),
+                    logs.messages(Level.WARNING, endpoint, "could not be decoded"));
         }
     }
 

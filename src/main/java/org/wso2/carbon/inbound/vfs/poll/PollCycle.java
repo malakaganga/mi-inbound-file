@@ -377,8 +377,18 @@ public final class PollCycle {
             Map<String, FolderListing.Metadata> names = new LinkedHashMap<>();
             Set<String> files = new HashSet<>();
             Set<String> folders = new HashSet<>();
+            boolean undecodable = false;
             for (FileObject child : children) {
                 String name = child.getName().getBaseName();
+                if (!undecodable && name.indexOf('\uFFFD') >= 0) {
+                    // A name that the client could not decode is not found again by that name. The lock step then
+                    // skips the file with no line, as a file that another node took. The file itself goes on as before.
+                    undecodable = true;
+                    services.log.warn("A file name in " + folder.getName().getURI() + " holds a character that could"
+                            + " not be decoded as UTF-8. If such a file is never taken, the server uses another"
+                            + " encoding for file names." + (SCHEME_SFTP.equals(folder.getName().getScheme())
+                            ? " Set fileNameEncoding in the address, for example fileNameEncoding=ISO-8859-1." : ""));
+                }
                 FileType type;
                 try {
                     type = child.getType();
