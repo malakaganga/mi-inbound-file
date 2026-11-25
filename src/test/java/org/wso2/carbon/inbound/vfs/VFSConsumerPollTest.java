@@ -421,8 +421,9 @@ class VFSConsumerPollTest {
         };
         try (Logs logs = new Logs()) {
             consumer.poll();
-            List<String> mediated = logs.messages(Level.SEVERE, endpoint, "File mediation failed.");
+            List<String> mediated = logs.messages(Level.SEVERE, endpoint, "File mediation failed for ");
             assertEquals(1, mediated.size());
+            assertTrue(mediated.get(0).contains("/a.xml."), mediated.get(0));
             assertTrue(mediated.get(0).contains("java.lang.IllegalStateException"), mediated.get(0));
             assertTrue(mediated.get(0).contains("\tat "), mediated.get(0));
             List<String> worker = logs.messages(Level.SEVERE, endpoint, "A file worker failed.");

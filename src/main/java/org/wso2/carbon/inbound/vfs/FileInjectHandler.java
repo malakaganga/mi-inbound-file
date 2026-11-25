@@ -282,7 +282,8 @@ public class FileInjectHandler {
             return !content.reply.failed() && (result == null || result.get(VFSConstants.ERROR_CODE) == null);
         } catch (Exception failure) {
             if (content.readFailure() == null && !content.reply.failed()) {
-                log.error(Utils.withTrace("File mediation failed.", failure));
+                log.error(Utils.withTrace("File mediation failed for " + UriMask.friendly(file.getName()) + ".",
+                        failure));
             }
             return false;
         }

@@ -20,18 +20,24 @@ import org.apache.axis2.builder.ApplicationXMLBuilder;
 import org.apache.axis2.context.ConfigurationContext;
 import org.apache.axis2.context.MessageContext;
 import org.apache.axis2.engine.AxisConfiguration;
+import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.synapse.config.SynapseConfiguration;
 import org.apache.synapse.core.SynapseEnvironment;
 import org.apache.synapse.core.axis2.Axis2MessageContext;
 import org.apache.synapse.inbound.InboundEndpoint;
 import org.apache.synapse.mediators.base.SequenceMediator;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.wso2.carbon.inbound.vfs.conn.VfsSession;
 import org.wso2.carbon.inbound.vfs.poll.Generation;
 import org.wso2.carbon.inbound.vfs.reply.ReplySender;
+import org.mockito.ArgumentCaptor;
+import org.wso2.org.apache.commons.vfs2.FileContent;
+import org.wso2.org.apache.commons.vfs2.FileName;
 import org.wso2.org.apache.commons.vfs2.FileObject;
 import org.wso2.org.apache.commons.vfs2.VFS;
 import org.wso2.vfs.shared.failstate.DigestingInputStream;
@@ -40,20 +46,26 @@ import org.wso2.vfs.shared.failstate.FileIdentity;
 import org.wso2.vfs.shared.log.NamedLog;
 import org.wso2.vfs.shared.log.RepeatLimiter;
 
+import java.io.ByteArrayInputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Properties;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.same;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -139,5 +151,101 @@ class FileInjectHandlerTest {
         assertEquals(1, injected.size());
         assertNull(injected.get(0).getBody().getFirstElement());
         assertEquals(EMPTY_DIGEST, identity.digest());
+    }
+
+    // A file that the builder refuses has its own ERROR line, which names the file with the password masked. Two
+    // files refused with the same cause give two lines. The same file again in the window of the repeat limiter gives
+    // no new line.
+    @Test
+    void aRefusedFileIsNamedInItsOwnLine() throws Exception {
+        Log out = mock(Log.class);
+        when(out.isErrorEnabled()).thenReturn(true);
+        NamedLog log = NamedLog.inbound(out, ENDPOINT, new RepeatLimiter());
+        for (String name : new String[]{"a.xml", "b.xml", "a.xml"}) {
+            assertFalse(refuse(name, log));
+        }
+        ArgumentCaptor<Object> lines = ArgumentCaptor.forClass(Object.class);
+        verify(out, times(2)).error(lines.capture());
+        String first = lines.getAllValues().get(0).toString();
+        String second = lines.getAllValues().get(1).toString();
+        String line = "[inbound:" + ENDPOINT + "] File mediation failed for sftp://user:***@host/in/";
+        assertTrue(first.startsWith(line + "a.xml."), first);
+        assertTrue(second.startsWith(line + "b.xml."), second);
+        assertFalse(first.contains("secret"), first);
+        assertFalse(second.contains("secret"), second);
+    }
+
+    // A file that fails on every poll gives one line in the window of the repeat limiter. The first line after the
+    // window carries the count of the lines held back.
+    @Test
+    @Tag("testbuild")
+    void aFileThatFailsOnEveryPollIsNamedOncePerWindow() throws Exception {
+        String previous = System.setProperty("vfs.testpoints.dir", folder.toString());
+        try {
+            Log out = mock(Log.class);
+            when(out.isErrorEnabled()).thenReturn(true);
+            NamedLog log = NamedLog.inbound(out, ENDPOINT, new RepeatLimiter());
+            for (int poll = 0; poll < 4; poll++) {
+                if (poll == 3) {
+                    try (Stream<Path> children = Files.list(folder)) {
+                        Path copy = children.filter(Files::isDirectory).findFirst().get();
+                        Files.write(copy.resolve("clock.repeat.mono"), "300010".getBytes(StandardCharsets.UTF_8));
+                    }
+                }
+                assertFalse(refuse("a.xml", log));
+            }
+            ArgumentCaptor<Object> lines = ArgumentCaptor.forClass(Object.class);
+            verify(out, times(2)).error(lines.capture());
+            String last = lines.getAllValues().get(1).toString();
+            assertTrue(last.contains("File mediation failed for sftp://user:***@host/in/a.xml."), last);
+            assertTrue(last.endsWith(" (skipped 2)"), last);
+        } finally {
+            if (previous == null) {
+                System.clearProperty("vfs.testpoints.dir");
+            } else {
+                System.setProperty("vfs.testpoints.dir", previous);
+            }
+        }
+    }
+
+    // Mediates one file of an SFTP folder whose content is not XML, so the XML builder refuses it.
+    private boolean refuse(String name, NamedLog log) throws Exception {
+        Properties properties = new Properties();
+        properties.setProperty(VFSConstants.TRANSPORT_FILE_FILE_URI, "sftp://user:secret@host/in");
+        properties.setProperty(VFSConstants.TRANSPORT_FILE_CONTENT_TYPE, "application/xml");
+        SynapseConfiguration configuration = mock(SynapseConfiguration.class);
+        SynapseEnvironment environment = mock(SynapseEnvironment.class);
+        SequenceMediator sequence = mock(SequenceMediator.class);
+        when(environment.getSynapseConfiguration()).thenReturn(configuration);
+        when(sequence.isInitialized()).thenReturn(true);
+        InboundEndpoint inbound = mock(InboundEndpoint.class);
+        when(inbound.getArtifactContainerName()).thenReturn(ENDPOINT);
+        when(configuration.getInboundEndpoint(ENDPOINT)).thenReturn(inbound);
+        AxisConfiguration axis = new AxisConfiguration();
+        axis.addMessageBuilder("application/xml", new ApplicationXMLBuilder());
+        ConfigurationContext context = new ConfigurationContext(axis);
+        when(environment.createMessageContext()).thenAnswer(call -> {
+            MessageContext message = new MessageContext();
+            message.setConfigurationContext(context);
+            return new Axis2MessageContext(message, configuration, environment);
+        });
+        FailStateStore store = mock(FailStateStore.class);
+        when(store.digesting(any(), any(), any())).thenAnswer(call ->
+                new DigestingInputStream(call.getArgument(0), call.getArgument(1), call.getArgument(2)));
+        FileName fileName = VFS.getManager().resolveURI("sftp://user:secret@host/in/" + name);
+        FileObject file = mock(FileObject.class);
+        FileContent content = mock(FileContent.class);
+        when(file.getName()).thenReturn(fileName);
+        when(file.getContent()).thenReturn(content);
+        when(content.getInputStream()).thenAnswer(call ->
+                new ByteArrayInputStream("not xml".getBytes(StandardCharsets.UTF_8)));
+        FileIdentity identity = new FileIdentity(fileName.getURI(), 7, 0, FileIdentity.TimeSource.LISTING, null);
+        FileInjectHandler handler = new FileInjectHandler("process", null, environment, new VFSConfig(properties));
+        try (FileInjectHandler.Content files = new FileInjectHandler.Content(file, identity, store,
+                mock(Generation.class), mock(VfsSession.class), ENDPOINT, mock(ReplySender.class), log)) {
+            boolean result = handler.invoke(sequence, ENDPOINT, new HashMap<>(), files);
+            assertNull(files.readFailure());
+            return result;
+        }
     }
 }
