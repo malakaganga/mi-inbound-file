@@ -258,7 +258,9 @@ public class FileInjectHandler {
                 documentElement = builder.processDocument(content.open(), contentType, axis2MsgCtx);
             }
 
-            if (vfsProperties.isBuild()) {
+            // The SOAP builder gives no element for an empty file of a type that it does not take as SOAP or REST.
+            // The envelope is then empty, as on the transport.
+            if (vfsProperties.isBuild() && documentElement != null) {
                 documentElement.build();
             }
             msgCtx.setEnvelope(TransportUtils.createSOAPEnvelope(documentElement));

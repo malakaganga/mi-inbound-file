@@ -69,16 +69,28 @@ class FileInjectHandlerTest {
     @TempDir
     Path folder;
 
-    // An empty XML file builds an empty envelope and goes into mediation once. The content is read through the real
+    // An empty file builds an empty envelope and goes into mediation once. The content is read through the real
     // digest and record streams, from a provider stream that closes itself at the end of the file, as the SFTP stream
-    // of the provider does.
+    // of the provider does. A type in upper case, a type with no builder and no type with an extension other than xml
+    // reach the SOAP builder, which gives no element for an empty file. The transport makes an empty envelope of that.
     @ParameterizedTest
-    @CsvSource({"false,false", "false,true", "true,false", "true,true"})
-    void emptyXmlFileIsMediatedOnceWithAnEmptyBody(boolean build, boolean streaming) throws Exception {
-        Path empty = Files.createFile(folder.resolve("e.xml"));
+    @CsvSource({"application/xml,e.xml,false,false", "application/xml,e.xml,false,true",
+            "application/xml,e.xml,true,false", "application/xml,e.xml,true,true",
+            "APPLICATION/SOAP+XML,e.txt,false,false", "APPLICATION/SOAP+XML,e.txt,false,true",
+            "APPLICATION/SOAP+XML,e.txt,true,false", "APPLICATION/SOAP+XML,e.txt,true,true",
+            "application/soap+xml,e.txt,false,false", "application/soap+xml,e.txt,true,false",
+            "application/x-unknown,e.txt,false,false", "application/x-unknown,e.txt,false,true",
+            "application/x-unknown,e.txt,true,false", "application/x-unknown,e.txt,true,true",
+            "'',e.dat,false,false", "'',e.dat,false,true", "'',e.dat,true,false", "'',e.dat,true,true",
+            "'',e.xml,false,false", "'',e.xml,true,false"})
+    void emptyFileIsMediatedOnceWithAnEmptyBody(String type, String name, boolean build, boolean streaming)
+            throws Exception {
+        Path empty = Files.createFile(folder.resolve(name));
         Properties properties = new Properties();
         properties.setProperty(VFSConstants.TRANSPORT_FILE_FILE_URI, folder.toUri().toString());
-        properties.setProperty(VFSConstants.TRANSPORT_FILE_CONTENT_TYPE, "application/xml");
+        if (!type.isEmpty()) {
+            properties.setProperty(VFSConstants.TRANSPORT_FILE_CONTENT_TYPE, type);
+        }
         properties.setProperty(VFSConstants.TRANSPORT_BUILD, String.valueOf(build));
         properties.setProperty(VFSConstants.STREAMING, String.valueOf(streaming));
 
