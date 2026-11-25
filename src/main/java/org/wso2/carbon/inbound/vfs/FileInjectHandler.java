@@ -284,7 +284,7 @@ public class FileInjectHandler {
                 return false;
             }
             Map<?, ?> result = (Map<?, ?>) axis2MsgCtx.getProperty(TRANSPORT_HEADERS);
-            return !content.reply.failed() && (result == null || result.get(VFSConstants.ERROR_CODE) == null);
+            return !content.reply.failed() && !failedBy(result == null ? null : result.get(VFSConstants.ERROR_CODE));
         } catch (Exception failure) {
             if (content.readFailure() == null && !content.reply.failed()) {
                 log.error(Utils.withTrace("File mediation failed for " + UriMask.friendly(file.getName()) + ".",
@@ -292,6 +292,12 @@ public class FileInjectHandler {
             }
             return false;
         }
+    }
+
+    // The transport listener counts a file as failed for an error code in the transport headers that is not an empty
+    // text. A value that is not a text failed the file there with an exception.
+    private static boolean failedBy(Object code) {
+        return code != null && !"".equals(code);
     }
 
     private org.apache.synapse.MessageContext createMessageContext(Map<String, Object> transportHeaders)

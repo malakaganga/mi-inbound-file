@@ -17,6 +17,7 @@ package org.wso2.carbon.inbound.vfs;
 
 import org.apache.axiom.om.OMAbstractFactory;
 import org.apache.axiom.om.OMElement;
+import org.apache.axiom.om.util.AXIOMUtil;
 import org.apache.axiom.soap.SOAPEnvelope;
 import org.apache.axiom.soap.SOAPFactory;
 import org.apache.axis2.Constants;
@@ -34,10 +35,15 @@ import org.apache.axis2.transport.http.ApplicationXMLFormatter;
 import org.apache.axis2.transport.http.SOAPMessageFormatter;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.synapse.SynapseConstants;
+import org.apache.synapse.SynapseException;
+import org.apache.synapse.config.xml.SequenceMediatorFactory;
 import org.apache.synapse.config.SynapseConfiguration;
 import org.apache.synapse.core.SynapseEnvironment;
+import org.apache.synapse.core.axis2.Axis2SynapseEnvironment;
 import org.apache.synapse.core.axis2.Axis2MessageContext;
 import org.apache.synapse.inbound.InboundEndpoint;
+import org.apache.synapse.mediators.AbstractMediator;
 import org.apache.synapse.mediators.base.SequenceMediator;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -69,7 +75,9 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -78,6 +86,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.same;
 import static org.mockito.Mockito.mock;
@@ -390,6 +399,117 @@ class FileInjectHandlerTest {
         }
         assertEquals(1, injected.size());
         assertEquals(namespace, injected.get(0).getNamespace().getNamespaceURI());
+    }
+
+    // A fault that the error sequence handles leaves the file processed, as on the transport listener. The file fails
+    // only when the flow leaves an error code in the transport headers. An empty text there is no error code, and a
+    // value that is not a text fails the file, as it failed the file on the transport with an exception. The flow and
+    // the error sequence run in the engine: a connector operation puts its own code on the message and throws, and
+    // for any other fault the fault handler puts the code 0.
+    @ParameterizedTest
+    @CsvSource({"700101,,true", "700101,LINE,false", ",,true", ",LINE,false", "700101,EMPTY,true",
+            "700101,NUMBER,false"})
+    void aHandledFaultFailsTheFileOnlyByAnErrorCodeInTheTransportHeaders(String code, String line, boolean processed)
+            throws Exception {
+        String value = "LINE".equals(line) ? "expression=\"get-property('ERROR_CODE')\"/>"
+                : "EMPTY".equals(line) ? "value=\"\"/>" : "value=\"0\" type=\"INTEGER\"/>";
+        String transport = line == null ? "" : "<property name=\"ERROR_CODE\" scope=\"transport\" " + value;
+        Engine run = mediate(new Properties(), errorSequence(transport), new FailingOperation(code));
+        assertEquals(processed, run.processed);
+        assertEquals("yes", run.message.getProperty("handled"));
+        assertEquals(code == null ? "0" : code, String.valueOf(run.message.getProperty(SynapseConstants.ERROR_CODE)));
+    }
+
+    // An error sequence that marks the message as handled, with more mediators after that mark.
+    private static String errorSequence(String more) {
+        return "<sequence xmlns=\"http://ws.apache.org/ns/synapse\" name=\"error\">"
+                + "<property name=\"handled\" value=\"yes\"/>" + more + "</sequence>";
+    }
+
+    // The outcome of one file mediated by the engine.
+    private static final class Engine {
+        boolean processed;
+        org.apache.synapse.MessageContext message;
+    }
+
+    // Mediates one XML file through a sequence of the given mediators, with the error sequence of the given XML. The
+    // inject runs in the engine of synapse, so the sequence, its fault handler and the error sequence are the real
+    // ones.
+    private Engine mediate(Properties extra, String error, AbstractMediator... flow) throws Exception {
+        return mediate(extra, error, NamedLog.inbound(LogFactory.getLog(FileInjectHandlerTest.class), ENDPOINT,
+                new RepeatLimiter()), flow);
+    }
+
+    private Engine mediate(Properties extra, String error, NamedLog log, AbstractMediator... flow) throws Exception {
+        Path file = Files.write(folder.resolve("in" + System.nanoTime() + ".xml"),
+                "<a/>".getBytes(StandardCharsets.UTF_8));
+        Properties properties = new Properties();
+        properties.setProperty(VFSConstants.TRANSPORT_FILE_FILE_URI, folder.toUri().toString());
+        properties.setProperty(VFSConstants.TRANSPORT_FILE_CONTENT_TYPE, "application/xml");
+        properties.putAll(extra);
+        SynapseConfiguration configuration = mock(SynapseConfiguration.class);
+        when(configuration.getProperty(anyString(), anyString())).thenAnswer(call -> call.getArgument(1));
+        SynapseEnvironment environment = mock(SynapseEnvironment.class);
+        when(environment.getSynapseConfiguration()).thenReturn(configuration);
+        InboundEndpoint inbound = mock(InboundEndpoint.class);
+        when(inbound.getArtifactContainerName()).thenReturn(ENDPOINT);
+        when(configuration.getInboundEndpoint(ENDPOINT)).thenReturn(inbound);
+        SequenceMediator sequence = new SequenceMediator();
+        sequence.setName("process");
+        for (AbstractMediator mediator : flow) {
+            sequence.addChild(mediator);
+        }
+        when(configuration.getSequence("process")).thenReturn(sequence);
+        when(configuration.getSequence("error")).thenReturn(new SequenceMediatorFactory()
+                .createMediator(AXIOMUtil.stringToOM(error), new Properties()));
+        AxisConfiguration axis = new AxisConfiguration();
+        axis.addMessageBuilder("application/xml", new ApplicationXMLBuilder());
+        ConfigurationContext context = new ConfigurationContext(axis);
+        when(environment.createMessageContext()).thenAnswer(call -> {
+            MessageContext message = new MessageContext();
+            message.setConfigurationContext(context);
+            return new Axis2MessageContext(message, configuration, environment);
+        });
+        Axis2SynapseEnvironment engine = new Axis2SynapseEnvironment(context, configuration);
+        Engine run = new Engine();
+        when(environment.injectInbound(any(), same(sequence), eq(true))).thenAnswer(call -> {
+            run.message = call.getArgument(0);
+            return engine.injectInbound(run.message, sequence, true);
+        });
+        FailStateStore store = mock(FailStateStore.class);
+        when(store.digesting(any(), any(), any())).thenAnswer(call ->
+                new DigestingInputStream(call.getArgument(0), call.getArgument(1), call.getArgument(2)));
+        FileObject source = VFS.getManager().resolveFile(file.toUri().toString());
+        FileIdentity identity = new FileIdentity(source.getName().getURI(), Files.size(file),
+                Files.getLastModifiedTime(file).toMillis(), FileIdentity.TimeSource.LISTING, null);
+        FileInjectHandler handler = new FileInjectHandler("process", "error", environment, new VFSConfig(properties));
+        try (FileInjectHandler.Content files = new FileInjectHandler.Content(source, identity, store,
+                mock(Generation.class), mock(VfsSession.class), ENDPOINT, mock(ReplySender.class), log)) {
+            run.processed = handler.invoke(sequence, ENDPOINT, new HashMap<>(), files);
+            assertNull(files.readFailure());
+        } finally {
+            source.close();
+        }
+        assertTrue(run.message != null, "The file reached the flow");
+        return run;
+    }
+
+    // Fails as a file connector operation fails: it puts its error code on the message and throws. With no code it
+    // fails as any other mediator does, and the fault handler of the engine puts the code.
+    private static final class FailingOperation extends AbstractMediator {
+        private final String code;
+
+        FailingOperation(String code) {
+            this.code = code;
+        }
+
+        @Override
+        public boolean mediate(org.apache.synapse.MessageContext message) {
+            if (code != null) {
+                message.setProperty(SynapseConstants.ERROR_CODE, code);
+            }
+            throw new SynapseException("The operation failed");
+        }
     }
 
     // Builds as the relay builder of the pack does (org.wso2.carbon.relay.BinaryRelayBuilder): the envelope takes the
