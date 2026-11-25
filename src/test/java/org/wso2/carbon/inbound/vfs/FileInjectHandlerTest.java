@@ -71,16 +71,21 @@ class FileInjectHandlerTest {
 
     // An empty file builds an empty envelope and goes into mediation once. The content is read through the real
     // digest and record streams, from a provider stream that closes itself at the end of the file, as the SFTP stream
-    // of the provider does. A type in upper case, a type with no builder and no type with an extension other than xml
-    // reach the SOAP builder, which gives no element for an empty file. The transport makes an empty envelope of that.
+    // of the provider does. A SOAP type in upper case, a type with no builder in any case, and no type with an extension
+    // other than xml and txt reach the SOAP builder as a type that it does not take as SOAP or REST. It then gives no
+    // element for an empty file, and the transport makes an empty envelope of that.
     @ParameterizedTest
     @CsvSource({"application/xml,e.xml,false,false", "application/xml,e.xml,false,true",
             "application/xml,e.xml,true,false", "application/xml,e.xml,true,true",
             "APPLICATION/SOAP+XML,e.txt,false,false", "APPLICATION/SOAP+XML,e.txt,false,true",
             "APPLICATION/SOAP+XML,e.txt,true,false", "APPLICATION/SOAP+XML,e.txt,true,true",
+            "TEXT/XML,e.txt,false,false", "TEXT/XML,e.txt,true,false",
             "application/soap+xml,e.txt,false,false", "application/soap+xml,e.txt,true,false",
+            "application/soap+xml; charset=UTF-8,e.txt,true,false", "text/xml,e.txt,true,false",
+            "text/xml; charset=UTF-8,e.txt,true,false",
             "application/x-unknown,e.txt,false,false", "application/x-unknown,e.txt,false,true",
             "application/x-unknown,e.txt,true,false", "application/x-unknown,e.txt,true,true",
+            "APPLICATION/X-UNKNOWN,e.txt,true,false",
             "'',e.dat,false,false", "'',e.dat,false,true", "'',e.dat,true,false", "'',e.dat,true,true",
             "'',e.xml,false,false", "'',e.xml,true,false"})
     void emptyFileIsMediatedOnceWithAnEmptyBody(String type, String name, boolean build, boolean streaming)
