@@ -42,6 +42,7 @@ import org.wso2.vfs.shared.failstate.FailState;
 import org.wso2.vfs.shared.health.EndpointHealth;
 
 import java.io.OutputStream;
+import java.net.SocketException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
@@ -89,6 +90,7 @@ class VFSConsumerPollTest {
     }
     SessionSetup setupSession = session -> { };
     boolean resetDuringDelivery;
+    long interval = 1000;
     VFSConsumer consumer;
 
     java.util.function.Consumer<Axis2MessageContext> mediation = message -> { };
@@ -129,7 +131,7 @@ class VFSConsumerPollTest {
         properties.putIfAbsent("transport.vfs.ActionAfterFailure", "NONE");
         properties.setProperty("transport.vfs.ContentType", "application/xml");
         properties.setProperty("transport.vfs.Build", "true");
-        consumer = new VFSConsumer(properties, endpoint, environment, 1000, "process", null, false, sequential) {
+        consumer = new VFSConsumer(properties, endpoint, environment, interval, "process", null, false, sequential) {
             @Override
             VfsSession newSession(long number) {
                 VfsSession session = spy(super.newSession(number));
@@ -890,6 +892,50 @@ class VFSConsumerPollTest {
             assertEquals(failed.get("lastError"), recovered.get("lastError"));
             assertEquals(List.of("/waiting.xml"), deliveries);
             assertFalse(Files.exists(queued));
+        }
+    }
+
+    // After a poll that failed on the transport before its listing, the next poll connects only after a wait. The
+    // first wait is the poll interval, each next wait doubles, and no wait is longer than 300 s.
+    @Test
+    void transportBackoffStartsAtTheIntervalAndNeverWaitsMoreThan300Seconds() throws Exception {
+        String uri = folder.toUri().toString();
+        properties.setProperty("transport.vfs.MaxRetryCount", "1");
+        long[] intervals = {1000, 120000, 300000, 600000};
+        long[][] waits = {
+                {1000, 2000, 4000, 8000, 16000, 32000, 64000, 128000, 256000, 300000, 300000},
+                {120000, 240000, 300000, 300000},
+                {300000, 300000},
+                {300000, 300000}};
+        String clock = "pollwait." + endpoint;
+        for (int index = 0; index < intervals.length; index++) {
+            interval = intervals[index];
+            AtomicLong elapsed = new AtomicLong();
+            AtomicLong resolves = new AtomicLong();
+            setupSession = session -> doAnswer(call -> {
+                resolves.incrementAndGet();
+                throw new FileSystemException(new SocketException("Local transport control"));
+            }).when(session).resolve(eq(uri), any());
+            try (MockedStatic<TestPoints> clocks = mockStatic(TestPoints.class, CALLS_REAL_METHODS)) {
+                clocks.when(() -> TestPoints.nanoTime(clock)).thenAnswer(call ->
+                        TimeUnit.MILLISECONDS.toNanos(elapsed.get()));
+                deploy(uri, true);
+                consumer.poll();
+                assertEquals(1L, resolves.get());
+                for (int step = 0; step < waits[index].length; step++) {
+                    long wait = waits[index][step];
+                    String row = "Interval " + interval + " ms, wait " + (step + 1) + " of " + wait + " ms";
+                    long failedAt = elapsed.get();
+                    elapsed.set(failedAt + wait - 1);
+                    consumer.poll();
+                    assertEquals(step + 1L, resolves.get(), row + ", a poll before the wait is over.");
+                    elapsed.set(failedAt + wait);
+                    consumer.poll();
+                    assertEquals(step + 2L, resolves.get(), row + ", the first poll after the wait.");
+                }
+            } finally {
+                close();
+            }
         }
     }
 
