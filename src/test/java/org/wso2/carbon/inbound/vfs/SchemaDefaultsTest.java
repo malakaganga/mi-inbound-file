@@ -51,6 +51,7 @@ class SchemaDefaultsTest {
         expected.put("Streaming", config.isStreaming());
         expected.put("Build", config.isBuild());
         expected.put("MaskHeaderPassword", config.isMaskHeaderPassword());
+        expected.put("FailOnErrorCode", config.isFailOnErrorCode());
         expected.put("ReplyFileURI", config.getReplyFileURI());
         expected.put("ReplyFileName", config.getReplayFileName());
         expected.put("Append", config.isAppend());

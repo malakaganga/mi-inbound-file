@@ -75,6 +75,7 @@ import static org.wso2.carbon.inbound.vfs.VFSConstants.TRANSPORT_AUTO_LOCK_RELEA
 import static org.wso2.carbon.inbound.vfs.VFSConstants.TRANSPORT_AUTO_LOCK_RELEASE_INTERVAL;
 import static org.wso2.carbon.inbound.vfs.VFSConstants.TRANSPORT_AUTO_LOCK_RELEASE_SAME_NODE;
 import static org.wso2.carbon.inbound.vfs.VFSConstants.TRANSPORT_BUILD;
+import static org.wso2.carbon.inbound.vfs.VFSConstants.TRANSPORT_FAIL_ON_ERROR_CODE;
 import static org.wso2.carbon.inbound.vfs.VFSConstants.TRANSPORT_MASK_HEADER_PASSWORD;
 import static org.wso2.carbon.inbound.vfs.VFSConstants.TRANSPORT_CHECK_SIZE_IGNORE_EMPTY;
 import static org.wso2.carbon.inbound.vfs.VFSConstants.TRANSPORT_CHECK_SIZE_INTERVAL;
@@ -126,6 +127,7 @@ public final class VFSConfig {
     private final boolean streaming;
     private final boolean build;
     private final boolean maskHeaderPassword;
+    private final boolean failOnErrorCode;
     private final boolean append;
     private final Integer fileProcessingCount;
     private final Integer fileProcessingInterval;
@@ -182,6 +184,7 @@ public final class VFSConfig {
         streaming = flag(p, STREAMING, false, RELEASED);
         build = flag(p, TRANSPORT_BUILD, false, RELEASED);
         maskHeaderPassword = flag(p, TRANSPORT_MASK_HEADER_PASSWORD, false, NEW);
+        failOnErrorCode = flag(p, TRANSPORT_FAIL_ON_ERROR_CODE, false, NEW);
         append = flag(p, APPEND, false, RELEASED);
         fileProcessingCount = integer(p, TRANSPORT_FILE_COUNT, null, 0);
         fileProcessingInterval = integer(p, TRANSPORT_FILE_INTERVAL, null, 0);
@@ -699,6 +702,10 @@ public final class VFSConfig {
 
     public boolean isMaskHeaderPassword() {
         return maskHeaderPassword;
+    }
+
+    public boolean isFailOnErrorCode() {
+        return failOnErrorCode;
     }
 
     public boolean isBuild() {

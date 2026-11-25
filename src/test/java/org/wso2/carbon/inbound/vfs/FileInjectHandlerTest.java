@@ -422,30 +422,39 @@ class FileInjectHandlerTest {
 
     // An error sequence that marks the message as handled, with more mediators after that mark.
     private static String errorSequence(String more) {
-        return "<sequence xmlns=\"http://ws.apache.org/ns/synapse\" name=\"error\">"
-                + "<property name=\"handled\" value=\"yes\"/>" + more + "</sequence>";
+        return sequence("error", "<property name=\"handled\" value=\"yes\"/>" + more);
+    }
+
+    private static String sequence(String name, String mediators) {
+        return "<sequence xmlns=\"http://ws.apache.org/ns/synapse\" name=\"" + name + "\">" + mediators + "</sequence>";
     }
 
     // The outcome of one file mediated by the engine.
     private static final class Engine {
         boolean processed;
+        String file;
         org.apache.synapse.MessageContext message;
     }
 
-    // Mediates one XML file through a sequence of the given mediators, with the error sequence of the given XML. The
-    // inject runs in the engine of synapse, so the sequence, its fault handler and the error sequence are the real
-    // ones.
     private Engine mediate(Properties extra, String error, AbstractMediator... flow) throws Exception {
-        return mediate(extra, error, NamedLog.inbound(LogFactory.getLog(FileInjectHandlerTest.class), ENDPOINT,
-                new RepeatLimiter()), flow);
+        Map<String, String> sequences = new HashMap<>();
+        sequences.put("error", error);
+        return mediate(extra, "application/xml", "<a/>", sequences, NamedLog.inbound(
+                LogFactory.getLog(FileInjectHandlerTest.class), ENDPOINT, new RepeatLimiter()), flow);
     }
 
-    private Engine mediate(Properties extra, String error, NamedLog log, AbstractMediator... flow) throws Exception {
-        Path file = Files.write(folder.resolve("in" + System.nanoTime() + ".xml"),
-                "<a/>".getBytes(StandardCharsets.UTF_8));
+    // Mediates one file through a sequence of the given mediators, with the error sequence "error" and the other named
+    // sequences of the given XML. The inject runs in the engine of synapse, so the sequence, its fault handler and the
+    // error sequences are the real ones. A type of null configures no content type.
+    private Engine mediate(Properties extra, String type, String body, Map<String, String> sequences, NamedLog log,
+                           AbstractMediator... flow) throws Exception {
+        Path file = Files.write(folder.resolve("in" + System.nanoTime() + (type == null ? ".dat" : ".xml")),
+                body.getBytes(StandardCharsets.UTF_8));
         Properties properties = new Properties();
         properties.setProperty(VFSConstants.TRANSPORT_FILE_FILE_URI, folder.toUri().toString());
-        properties.setProperty(VFSConstants.TRANSPORT_FILE_CONTENT_TYPE, "application/xml");
+        if (type != null) {
+            properties.setProperty(VFSConstants.TRANSPORT_FILE_CONTENT_TYPE, type);
+        }
         properties.putAll(extra);
         SynapseConfiguration configuration = mock(SynapseConfiguration.class);
         when(configuration.getProperty(anyString(), anyString())).thenAnswer(call -> call.getArgument(1));
@@ -460,8 +469,10 @@ class FileInjectHandlerTest {
             sequence.addChild(mediator);
         }
         when(configuration.getSequence("process")).thenReturn(sequence);
-        when(configuration.getSequence("error")).thenReturn(new SequenceMediatorFactory()
-                .createMediator(AXIOMUtil.stringToOM(error), new Properties()));
+        for (Map.Entry<String, String> named : sequences.entrySet()) {
+            when(configuration.getSequence(named.getKey())).thenReturn(new SequenceMediatorFactory()
+                    .createMediator(AXIOMUtil.stringToOM(named.getValue()), new Properties()));
+        }
         AxisConfiguration axis = new AxisConfiguration();
         axis.addMessageBuilder("application/xml", new ApplicationXMLBuilder());
         ConfigurationContext context = new ConfigurationContext(axis);
@@ -472,6 +483,7 @@ class FileInjectHandlerTest {
         });
         Axis2SynapseEnvironment engine = new Axis2SynapseEnvironment(context, configuration);
         Engine run = new Engine();
+        run.file = file.getFileName().toString();
         when(environment.injectInbound(any(), same(sequence), eq(true))).thenAnswer(call -> {
             run.message = call.getArgument(0);
             return engine.injectInbound(run.message, sequence, true);
@@ -492,6 +504,99 @@ class FileInjectHandlerTest {
         }
         assertTrue(run.message != null, "The file reached the flow");
         return run;
+    }
+
+    // With FailOnErrorCode a file whose flow ends with an error code on the message fails, also when the error
+    // sequence handled the fault, and the ERROR line names the file and the code. A flow that removes the code has
+    // handled the error, and its file is processed. With the parameter off a handled fault leaves the file processed,
+    // as before. The code of a connector operation and the code 0 of the fault handler of the engine count the same.
+    @ParameterizedTest
+    @CsvSource({"700101,true,LOG,false", "700101,true,REMOVE,true", "700101,false,LOG,true", ",true,LOG,false",
+            ",true,REMOVE,true", ",false,LOG,true"})
+    void failOnErrorCodeFailsAFileWhoseFlowEndsWithAnErrorCode(String code, boolean on, String error,
+                                                                boolean processed) throws Exception {
+        Log out = mock(Log.class);
+        when(out.isErrorEnabled()).thenReturn(true);
+        Properties extra = new Properties();
+        extra.setProperty(VFSConstants.TRANSPORT_FAIL_ON_ERROR_CODE, String.valueOf(on));
+        Map<String, String> sequences = new HashMap<>();
+        sequences.put("error", errorSequence("REMOVE".equals(error)
+                ? "<property name=\"ERROR_CODE\" action=\"remove\"/>" : "<log level=\"custom\"/>"));
+        Engine run = mediate(extra, "application/xml", "<a/>", sequences,
+                NamedLog.inbound(out, ENDPOINT, new RepeatLimiter()), new FailingOperation(code));
+        assertEquals(processed, run.processed);
+        assertEquals("yes", run.message.getProperty("handled"));
+        ArgumentCaptor<Object> lines = ArgumentCaptor.forClass(Object.class);
+        verify(out, times(processed ? 0 : 1)).error(lines.capture());
+        if (!processed) {
+            String line = lines.getValue().toString();
+            assertTrue(line.startsWith("[inbound:" + ENDPOINT + "] File mediation failed for file://"), line);
+            assertTrue(line.endsWith("/" + run.file + ". The flow ended with ERROR_CODE " + (code == null ? "0" : code)
+                    + "."), line);
+        }
+    }
+
+    // A flow that ends well leaves no error code, and its file is processed with FailOnErrorCode.
+    @Test
+    void failOnErrorCodeLeavesAFlowThatEndsWellProcessed() throws Exception {
+        Properties extra = new Properties();
+        extra.setProperty(VFSConstants.TRANSPORT_FAIL_ON_ERROR_CODE, "true");
+        Engine run = mediate(extra, errorSequence(""), new Passing());
+        assertTrue(run.processed);
+        assertEquals("yes", run.message.getProperty("passed"));
+        assertNull(run.message.getProperty("handled"));
+    }
+
+    // A sequence inside the flow has its own error sequence, which recovers, for example with a write to another
+    // place, and the flow ends there with no other fault. The code of the first fault stays on the message, so with
+    // FailOnErrorCode the file fails. A flow that recovers from an error removes ERROR_CODE.
+    @ParameterizedTest
+    @CsvSource({"false,false", "true,true"})
+    void anInnerErrorSequenceThatRecoversFailsTheFileUnlessItRemovesTheCode(boolean removes, boolean processed)
+            throws Exception {
+        Properties extra = new Properties();
+        extra.setProperty(VFSConstants.TRANSPORT_FAIL_ON_ERROR_CODE, "true");
+        Map<String, String> sequences = new HashMap<>();
+        sequences.put("error", errorSequence(""));
+        sequences.put("recover", sequence("recover", "<property name=\"recovered\" value=\"yes\"/>"
+                + (removes ? "<property name=\"ERROR_CODE\" action=\"remove\"/>" : "")));
+        SequenceMediator inner = new SequenceMediator();
+        inner.setErrorHandler("recover");
+        inner.addChild(new FailingOperation("700101"));
+        Engine run = mediate(extra, "application/xml", "<a/>", sequences, NamedLog.inbound(
+                LogFactory.getLog(FileInjectHandlerTest.class), ENDPOINT, new RepeatLimiter()), inner);
+        assertEquals(processed, run.processed);
+        assertEquals("yes", run.message.getProperty("recovered"));
+        assertNull(run.message.getProperty("handled"));
+    }
+
+    // A file with no content and no type reaches a messaging connector that refuses an empty message with its own
+    // code, and the error sequence handles it. With FailOnErrorCode the file fails with the code of that connector.
+    // Without it the file is processed, as before.
+    @ParameterizedTest
+    @CsvSource({"true,false", "false,true"})
+    void anEmptyFileThatAnotherConnectorRefusesFailsWithFailOnErrorCode(boolean on, boolean processed)
+            throws Exception {
+        Properties extra = new Properties();
+        extra.setProperty(VFSConstants.TRANSPORT_FAIL_ON_ERROR_CODE, String.valueOf(on));
+        Map<String, String> sequences = new HashMap<>();
+        sequences.put("error", errorSequence(""));
+        Engine run = mediate(extra, null, "", sequences, NamedLog.inbound(
+                LogFactory.getLog(FileInjectHandlerTest.class), ENDPOINT, new RepeatLimiter()),
+                new FailingOperation("700124"));
+        assertEquals(processed, run.processed);
+        assertEquals("yes", run.message.getProperty("handled"));
+        assertEquals("700124", run.message.getProperty(SynapseConstants.ERROR_CODE));
+        assertNull(run.message.getEnvelope().getBody().getFirstElement());
+    }
+
+    // Ends well.
+    private static final class Passing extends AbstractMediator {
+        @Override
+        public boolean mediate(org.apache.synapse.MessageContext message) {
+            message.setProperty("passed", "yes");
+            return true;
+        }
     }
 
     // Fails as a file connector operation fails: it puts its error code on the message and throws. With no code it

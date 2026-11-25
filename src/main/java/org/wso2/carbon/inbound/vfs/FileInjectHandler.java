@@ -284,7 +284,18 @@ public class FileInjectHandler {
                 return false;
             }
             Map<?, ?> result = (Map<?, ?>) axis2MsgCtx.getProperty(TRANSPORT_HEADERS);
-            return !content.reply.failed() && !failedBy(result == null ? null : result.get(VFSConstants.ERROR_CODE));
+            if (content.reply.failed() || failedBy(result == null ? null : result.get(VFSConstants.ERROR_CODE))) {
+                return false;
+            }
+            // With FailOnErrorCode the error code that the connector or the fault handler put on the message fails the
+            // file. A flow that handled the error removes it. The flow is seen as it gives back this thread.
+            Object code = msgCtx.getProperty(SynapseConstants.ERROR_CODE);
+            if (vfsProperties.isFailOnErrorCode() && failedBy(code)) {
+                log.error("File mediation failed for " + UriMask.friendly(file.getName()) + ". The flow ended with "
+                        + "ERROR_CODE " + code + ".");
+                return false;
+            }
+            return true;
         } catch (Exception failure) {
             if (content.readFailure() == null && !content.reply.failed()) {
                 log.error(Utils.withTrace("File mediation failed for " + UriMask.friendly(file.getName()) + ".",

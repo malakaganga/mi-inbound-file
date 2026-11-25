@@ -356,6 +356,17 @@ class VFSConfigTest {
         assertTrue(assertThrows(IllegalArgumentException.class, () -> new VFSConfig(p)).getMessage().contains(key));
     }
 
+    @Test
+    void failOnErrorCodeIsOffByDefaultAndRefusesAWrongValue() {
+        String key = PREFIX + "FailOnErrorCode";
+        Properties p = properties();
+        assertFalse(new VFSConfig(p).isFailOnErrorCode());
+        p.setProperty(key, "TRUE");
+        assertTrue(new VFSConfig(p).isFailOnErrorCode());
+        p.setProperty(key, "1");
+        assertTrue(assertThrows(IllegalArgumentException.class, () -> new VFSConfig(p)).getMessage().contains(key));
+    }
+
     private static List<String> warnings(Runnable action) {
         Logger logger = Logger.getLogger(VFSConfig.class.getName());
         List<String> warnings = new ArrayList<>();
@@ -401,7 +412,7 @@ class VFSConfigTest {
     @ParameterizedTest
     @CsvSource({"Streaming,true", "Build,true", "Append,true", "FileSortAscending,true", "CheckSizeIgnoreEmpty,true",
             "UpdateLastModified,true", "AutoLockRelease,true", "LockReleaseSameNode,true", "CreateFolder,true",
-            "IsMounted,true", "AvoidPermissionCheck,true", "MaskHeaderPassword,false"})
+            "IsMounted,true", "AvoidPermissionCheck,true", "MaskHeaderPassword,false", "FailOnErrorCode,false"})
     void aWrongBooleanIsFalseForAParameterOfBeforeAndRefusedForANewOne(String name, boolean released) {
         Properties p = properties();
         p.setProperty(PREFIX + "AutoLockReleaseInterval", "60000");
