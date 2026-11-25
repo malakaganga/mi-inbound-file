@@ -271,6 +271,9 @@ public final class PollCycle {
                         services.log.error("Could not resolve the poll root. " + failure.getStatusText());
                         return null;
                     }
+                    services.log.warn("Failed to resolve the file URI: " + rootUri + ", in attempt " + attempt + ", "
+                            + failure.getStatusText() + " Retrying in " + config.getReconnectTimeout()
+                            + " milliseconds.");
                     if (!pause(config.getReconnectTimeout())) {
                         break;
                     }

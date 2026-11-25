@@ -872,6 +872,38 @@ class VFSConsumerPollTest {
         }
     }
 
+    // As in the old transport, each failed resolve of the poll root that is tried again gives one WARN. The address
+    // in the line is masked.
+    @Test
+    void eachFailedResolveThatIsTriedAgainWarnsWithTheMaskedAddress() throws Exception {
+        String uri = "sftp://reader:Secret123@sftp.example.invalid/in";
+        properties.setProperty("transport.vfs.MaxRetryCount", "3");
+        properties.setProperty("transport.vfs.ReconnectTimeout", "500ms");
+        List<String> resolved = Collections.synchronizedList(new ArrayList<>());
+        setupSession = session -> doAnswer(call -> {
+            resolved.add(call.getArgument(0));
+            throw new FileSystemException("The resolve fixture is unavailable.");
+        }).when(session).resolve(anyString(), any());
+        deploy(uri, true);
+        try (Logs logs = new Logs()) {
+            consumer.poll();
+            assertEquals(3, resolved.size());
+            List<String> warnings = logs.messages(Level.WARNING, endpoint, "Failed to resolve the file URI");
+            assertEquals(2, warnings.size());
+            for (int attempt = 1; attempt <= 2; attempt++) {
+                String line = warnings.get(attempt - 1);
+                assertTrue(line.contains("Failed to resolve the file URI: sftp://reader:***@sftp.example.invalid/in,"
+                        + " in attempt " + attempt + ", "), line);
+                assertTrue(line.endsWith(" Retrying in 500 milliseconds."), line);
+            }
+            for (LogRecord record : logs.records) {
+                assertFalse(String.valueOf(record.getMessage()).contains("Secret123"), record.getMessage());
+            }
+        } finally {
+            close();
+        }
+    }
+
     @Test
     void destroyWakesThePendingReconnectWithoutASecondResolve() throws Exception {
         String uri = folder.toUri().toString();
