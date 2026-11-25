@@ -44,6 +44,10 @@ import org.apache.synapse.core.axis2.Axis2SynapseEnvironment;
 import org.apache.synapse.core.axis2.Axis2MessageContext;
 import org.apache.synapse.inbound.InboundEndpoint;
 import org.apache.synapse.mediators.AbstractMediator;
+import org.apache.synapse.mediators.eip.Target;
+import org.apache.synapse.mediators.eip.splitter.CloneMediator;
+import org.apache.synapse.mediators.eip.splitter.IterateMediator;
+import org.apache.synapse.util.xpath.SynapseXPath;
 import org.apache.synapse.mediators.base.SequenceMediator;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -588,6 +592,50 @@ class FileInjectHandlerTest {
         assertEquals("yes", run.message.getProperty("handled"));
         assertEquals("700124", run.message.getProperty(SynapseConstants.ERROR_CODE));
         assertNull(run.message.getEnvelope().getBody().getFirstElement());
+    }
+
+    // A fault in a branch of an iterate is on a copy of the message, and the branch handles it there. The message of
+    // the file carries no error code, so the file is processed, also with FailOnErrorCode.
+    @Test
+    void aFaultInAnIterateBranchIsNotSeenByFailOnErrorCode() throws Exception {
+        Properties extra = new Properties();
+        extra.setProperty(VFSConstants.TRANSPORT_FAIL_ON_ERROR_CODE, "true");
+        IterateMediator iterate = new IterateMediator();
+        iterate.setExpression(new SynapseXPath("//a"));
+        iterate.setContinueParent(true);
+        iterate.setTarget(failingTarget());
+        Engine run = mediate(extra, errorSequence(""), iterate, new Passing());
+        assertTrue(run.processed);
+        assertNull(run.message.getProperty(SynapseConstants.ERROR_CODE));
+        assertEquals("yes", run.message.getProperty("passed"));
+    }
+
+    // A clone that runs its branches one after the other handles the fault of a branch on its copy, and then fails
+    // itself on the message of the file, because it reads the error flag of the branch as a text and the branch sets
+    // it as a boolean. So the error sequence of the flow runs with the code 0, and with FailOnErrorCode the file fails.
+    @Test
+    void aSequentialCloneFailsOnTheMessageOfTheFileAfterAFaultInABranch() throws Exception {
+        Properties extra = new Properties();
+        extra.setProperty(VFSConstants.TRANSPORT_FAIL_ON_ERROR_CODE, "true");
+        CloneMediator clone = new CloneMediator();
+        clone.setSequential(true);
+        clone.setContinueParent(true);
+        clone.addTarget(failingTarget());
+        Engine run = mediate(extra, errorSequence(""), clone, new Passing());
+        assertFalse(run.processed);
+        assertEquals("0", String.valueOf(run.message.getProperty(SynapseConstants.ERROR_CODE)));
+        assertEquals("yes", run.message.getProperty("handled"));
+        assertNull(run.message.getProperty("passed"));
+    }
+
+    // A branch that runs on the poll thread and fails as a file connector operation fails.
+    private static Target failingTarget() {
+        SequenceMediator branch = new SequenceMediator();
+        branch.addChild(new FailingOperation("700101"));
+        Target target = new Target();
+        target.setSequence(branch);
+        target.setAsynchronous(false);
+        return target;
     }
 
     // Ends well.
