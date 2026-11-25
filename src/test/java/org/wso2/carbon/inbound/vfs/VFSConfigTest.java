@@ -367,6 +367,34 @@ class VFSConfigTest {
         assertTrue(assertThrows(IllegalArgumentException.class, () -> new VFSConfig(p)).getMessage().contains(key));
     }
 
+    // Each address keeps its own value. The client resolves DFS paths unless the endpoint or the address turns it off.
+    @Test
+    void smb2DfsIsOnByDefaultTakesTrueOrFalseAndRefusesAWrongValue() throws Exception {
+        String key = PREFIX + "SMB2DfsEnabled";
+        Smb2FileSystemConfigBuilder smb = Smb2FileSystemConfigBuilder.getInstance();
+        Properties p = properties();
+        p.setProperty(URI_KEY, "smb2://host/share/in");
+        p.setProperty(TARGET, "smb2://other/share/out");
+        VFSConfig config = new VFSConfig(p);
+        assertNull(config.getOptions(URI_KEY).get(key));
+        assertTrue(smb.getDfsEnabled(Utils.attachFileSystemOptions(config.getOptions(URI_KEY), null)));
+        p.setProperty(key, "FALSE");
+        config = new VFSConfig(p);
+        assertEquals("false", config.getOptions(URI_KEY).get(key));
+        assertFalse(smb.getDfsEnabled(Utils.attachFileSystemOptions(config.getOptions(URI_KEY), null)));
+        assertFalse(smb.getDfsEnabled(Utils.attachFileSystemOptions(config.getOptions(TARGET), null)));
+        p.setProperty(TARGET, "smb2://other/share/out?" + key + "=true");
+        config = new VFSConfig(p);
+        assertFalse(smb.getDfsEnabled(Utils.attachFileSystemOptions(config.getOptions(URI_KEY), null)));
+        assertEquals("true", config.getOptions(TARGET).get(key));
+        assertTrue(smb.getDfsEnabled(Utils.attachFileSystemOptions(config.getOptions(TARGET), null)));
+        p.setProperty(key, "no");
+        assertTrue(assertThrows(IllegalArgumentException.class, () -> new VFSConfig(p)).getMessage().contains(key));
+        p.remove(key);
+        p.setProperty(TARGET, "smb2://other/share/out?" + key + "=off");
+        assertTrue(assertThrows(IllegalArgumentException.class, () -> new VFSConfig(p)).getMessage().contains(key));
+    }
+
     private static List<String> warnings(Runnable action) {
         Logger logger = Logger.getLogger(VFSConfig.class.getName());
         List<String> warnings = new ArrayList<>();
@@ -412,7 +440,8 @@ class VFSConfigTest {
     @ParameterizedTest
     @CsvSource({"Streaming,true", "Build,true", "Append,true", "FileSortAscending,true", "CheckSizeIgnoreEmpty,true",
             "UpdateLastModified,true", "AutoLockRelease,true", "LockReleaseSameNode,true", "CreateFolder,true",
-            "IsMounted,true", "AvoidPermissionCheck,true", "MaskHeaderPassword,false", "FailOnErrorCode,false"})
+            "IsMounted,true", "AvoidPermissionCheck,true", "MaskHeaderPassword,false", "FailOnErrorCode,false",
+            "SMB2DfsEnabled,false"})
     void aWrongBooleanIsFalseForAParameterOfBeforeAndRefusedForANewOne(String name, boolean released) {
         Properties p = properties();
         p.setProperty(PREFIX + "AutoLockReleaseInterval", "60000");
@@ -790,11 +819,13 @@ class VFSConfigTest {
         p.setProperty(PREFIX + "SMB2ReadTimeout", "21");
         p.setProperty(PREFIX + "SMB2WriteTimeout", "22");
         p.setProperty(PREFIX + "SMB2TransactTimeout", "23");
+        p.setProperty(PREFIX + "SMB2DfsEnabled", "false");
         target = Utils.attachFileSystemOptions(new VFSConfig(p).getOptions(TARGET), null);
         Smb2FileSystemConfigBuilder smb = Smb2FileSystemConfigBuilder.getInstance();
         assertEquals(21, smb.getReadTimeout(target).toMillis());
         assertEquals(22, smb.getWriteTimeout(target).toMillis());
         assertEquals(23, smb.getTransactTimeout(target).toMillis());
+        assertFalse(smb.getDfsEnabled(target));
         assertTrue(smb.getEncryptionEnabled(target));
     }
 

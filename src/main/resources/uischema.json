@@ -900,6 +900,17 @@
           {
             "type": "attribute",
             "value": {
+              "name": "transport.vfs.SMB2DfsEnabled",
+              "displayName": "SMB2 DFS Enabled",
+              "inputType": "checkbox",
+              "required": "false",
+              "defaultValue": true,
+              "helpTip": "When true, the SMB2 client resolves DFS paths. Set false for a server that does not use DFS."
+            }
+          },
+          {
+            "type": "attribute",
+            "value": {
               "name": "transport.vfs.WriteStallTimeout",
               "displayName": "Write Stall Timeout",
               "inputType": "string",

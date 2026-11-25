@@ -207,6 +207,7 @@ public class Utils {
                     value -> smb.setWriteTimeout(opts, Duration.ofMillis(Long.parseLong(value))));
             ifPresent(options, "SMB2TransactTimeout",
                     value -> smb.setTransactTimeout(opts, Duration.ofMillis(Long.parseLong(value))));
+            ifPresent(options, "SMB2DfsEnabled", value -> smb.setDfsEnabled(opts, Boolean.parseBoolean(value)));
             ifPresent(options, "WriteStallTimeout",
                     value -> smb.setWriteStallTimeout(opts, Duration.ofMillis(Long.parseLong(value))));
         }

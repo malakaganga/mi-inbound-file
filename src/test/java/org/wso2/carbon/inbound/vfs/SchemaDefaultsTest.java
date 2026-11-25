@@ -19,6 +19,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.junit.jupiter.api.Test;
+import org.wso2.org.apache.commons.vfs2.provider.smb2.Smb2FileSystemConfigBuilder;
 
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
@@ -84,6 +85,10 @@ class SchemaDefaultsTest {
         expected.put("StopTimeout", config.getStopTimeout() / 1000 + "s");
         expected.put("LockReleaseSameNode", true);
         expected.put("IsMounted", Boolean.parseBoolean(config.getVfsSchemeProperties().get("transport.vfs.IsMounted")));
+        // The endpoint sets no DFS value, so the client resolves DFS paths.
+        assertFalse(config.getVfsSchemeProperties().containsKey("transport.vfs.SMB2DfsEnabled"));
+        expected.put("SMB2DfsEnabled", Smb2FileSystemConfigBuilder.getInstance().getDfsEnabled(
+                Utils.attachFileSystemOptions(config.getVfsSchemeProperties(), null)));
         assertEquals(VFSConfig.DELETE, config.getActionAfterProcess());
         assertEquals(VFSConfig.DELETE, config.getActionAfterFailure());
         expected.put("ActionAfterProcess", "DELETE");

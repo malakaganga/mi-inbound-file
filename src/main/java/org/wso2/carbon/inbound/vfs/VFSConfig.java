@@ -626,6 +626,10 @@ public final class VFSConfig {
                 merged.put(key, String.valueOf(flag(key, value, false, RELEASED)));
             }
         }
+        String dfs = merged.get(PREFIX + "SMB2DfsEnabled");
+        if (dfs != null) {
+            merged.put(PREFIX + "SMB2DfsEnabled", String.valueOf(flag(PREFIX + "SMB2DfsEnabled", dfs, true, NEW)));
+        }
         String type = merged.get(FILE_TYPE);
         if (type != null && ("ftp".equalsIgnoreCase(scheme) || "ftps".equalsIgnoreCase(scheme))) {
             try {
