@@ -42,6 +42,7 @@ import org.mockito.MockedStatic;
 import org.wso2.vfs.shared.health.HealthRegistry;
 import org.wso2.vfs.shared.failstate.FailState;
 import org.wso2.vfs.shared.health.EndpointHealth;
+import org.wso2.vfs.shared.lock.LockIo;
 
 import java.io.OutputStream;
 import java.net.SocketException;
@@ -60,6 +61,7 @@ import java.util.Properties;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.nio.charset.StandardCharsets;
@@ -973,7 +975,7 @@ class VFSConsumerPollTest {
     }
 
     @Test
-    void lockedDecisionCountsAReplacementAndLeavesARetryOutsideTheCount() throws Exception {
+    void lockedDecisionDefersAReplacementAndLeavesARetryOutsideTheCount() throws Exception {
         for (boolean pending : new boolean[]{false, true}) {
             for (boolean replacement : new boolean[]{false, true}) {
                 verifyCount(pending, replacement, true);
@@ -1018,28 +1020,72 @@ class VFSConsumerPollTest {
             withholdWrite.set(pending);
             deliveries.clear();
             consumer.poll();
-            if (replacement && sequential) {
-                assertEquals(List.of("/a.xml"), deliveries);
-                assertFalse(Files.exists(input.resolve("b.xml.fail")));
-            } else {
-                assertEquals(List.of("/b.xml"), deliveries);
-                assertTrue(Files.isRegularFile(input.resolve("b.xml.fail")));
-            }
-            if (sequential) {
-                assertEquals(pending, Files.exists(input.resolve("a.xml.lock")));
-                assertEquals(!pending || !replacement, Files.exists(marker));
-            } else {
+            assertEquals(List.of("/b.xml"), deliveries);
+            assertTrue(Files.isRegularFile(input.resolve("b.xml.fail")));
+            if (replacement) {
+                // The replacement is taken at the next poll, after its old record was removed in this one.
                 assertFalse(Files.exists(marker));
                 deliveries.clear();
                 consumer.poll();
                 assertEquals(List.of("/a.xml"), deliveries);
+            } else {
+                assertTrue(Files.exists(marker));
             }
+            assertEquals(pending, Files.exists(input.resolve("a.xml.lock")));
         } finally {
             withholdWrite.set(false);
             close();
         }
     }
 
+
+    @Test
+    void aRecordThatTheLookMissesDefersTheFileOnASequentialInbound() throws Exception {
+        Path input = Files.createDirectory(folder.resolve("missed"));
+        Path hidden = Files.createDirectory(folder.resolve("hidden"));
+        Path unavailable = Files.writeString(folder.resolve("missed.txt"), "ordinary file");
+        Files.writeString(input.resolve("a.xml"), "<a/>");
+        Path marker = input.resolve("a.xml.fail");
+        AtomicBoolean hide = new AtomicBoolean();
+        setupSession = session -> doAnswer(call -> {
+            LockIo real = (LockIo) call.callRealMethod();
+            LockIo io = spy(real);
+            doAnswer(look -> {
+                String uri = look.getArgument(0);
+                if (hide.get() && uri.endsWith("/a.xml.fail")) {
+                    // The look of a server that answers a generic failure twice: the record reads as not there.
+                    return real.resolve(hidden.toUri() + "a.xml.fail");
+                }
+                return look.callRealMethod();
+            }).when(io).resolve(anyString());
+            return io;
+        }).when(session).lockIo(anyString());
+        properties.setProperty("transport.vfs.ActionAfterProcess", "MOVE");
+        properties.setProperty("transport.vfs.MoveAfterProcess", unavailable.toUri().toString());
+        properties.setProperty(VFSConstants.TRANSPORT_FAILED_RECORD_NEXT_RETRY_DURATION, "0");
+        deliveries.clear();
+        deploy(input.toUri().toString(), true);
+        try (Logs logs = new Logs()) {
+            consumer.poll();
+            assertEquals(List.of("/a.xml"), deliveries);
+            assertTrue(Files.isRegularFile(marker), "The failed move must have a durable record.");
+
+            hide.set(true);
+            deliveries.clear();
+            consumer.poll();
+            assertEquals(List.of(), deliveries, "A record that the look misses must not take the file again.");
+            assertEquals(1, logs.messages(Level.WARNING, endpoint, "so the file is taken at the next poll.").size());
+            assertTrue(Files.isRegularFile(marker));
+
+            hide.set(false);
+            consumer.poll();
+            assertEquals(List.of(), deliveries, "The record is seen again, so the post action is retried.");
+            assertTrue(Files.isRegularFile(marker));
+        } finally {
+            hide.set(false);
+            close();
+        }
+    }
 
     @Test
     void skippedTicksPreserveTheLastObservationAndSuccessfulListingsAdvanceIt() throws Exception {

@@ -620,9 +620,15 @@ public final class PollCycle {
                 tasks.add(task);
                 if (slot == null) {
                     counted = false;
-                    boolean deferReplacement = marker && generation.workerPool != null;
+                    // A file under a listed fail record is taken only at the next poll when the store finds no
+                    // record now, so a look that missed the record can not take the file a second time.
+                    boolean deferReplacement = marker;
                     FileTask.Outcome outcome = task.processOnPoll(file.listed, deferReplacement);
                     FailStateStore.Decision decision = task.decision();
+                    if (marker && decision == FailStateStore.Decision.PROCESS) {
+                        services.log.warn("The listed fail record was not found or no longer fits the file, so the"
+                                + " file is taken at the next poll. " + file.uri);
+                    }
                     task = null;
                     missingSequence |= outcome == FileTask.Outcome.MISSING_SEQUENCE;
                     if (decision == FailStateStore.Decision.RETRY || marker
