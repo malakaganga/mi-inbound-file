@@ -1400,6 +1400,63 @@ class VFSConsumerPollTest {
         }
     }
 
+    // A reply name that leaves the reply folder is refused, from the header and from the parameter. An absolute name
+    // and a name with a scheme are appended to the reply folder, so they are written inside it. Nothing is written
+    // outside the reply folder. The reply folder lies two levels deep, so a name that escaped it would still land
+    // inside the test folder.
+    @ParameterizedTest
+    @CsvSource({"../out.xml,true", "../out.xml,false", "../../out.xml,true", "../../out.xml,false",
+            "nested/../../out.xml,true", "nested/../../out.xml,false", "ABSOLUTE,true", "ABSOLUTE,false",
+            "SCHEME,true", "SCHEME,false"})
+    void aReplyNameStaysInsideTheReplyFolder(String supplied, boolean header) throws Exception {
+        Path input = Files.createDirectory(folder.resolve("input"));
+        Path source = Files.writeString(input.resolve("source.xml"), "<receipt>body</receipt>");
+        Path replies = Files.createDirectories(folder.resolve("one").resolve("two").resolve("replies"));
+        Path outside = Files.createDirectory(folder.resolve("outside"));
+        boolean inside = supplied.equals("ABSOLUTE") || supplied.equals("SCHEME");
+        String name = supplied.equals("ABSOLUTE") ? outside.resolve("out.xml").toString()
+                : supplied.equals("SCHEME") ? outside.resolve("out.xml").toUri().toString() : supplied;
+        properties.setProperty(VFSConstants.REPLY_FILE_URI, replies.toUri().toString());
+        properties.setProperty(VFSConstants.REPLY_FILE_NAME, header ? "parameter.xml" : name);
+        List<Boolean> refused = new ArrayList<>();
+        mediation = message -> {
+            MessageContext axis = message.getAxis2MessageContext();
+            axis.setProperty(org.apache.axis2.Constants.Configuration.MESSAGE_TYPE, "application/xml");
+            if (header) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> headers = (Map<String, Object>) axis.getProperty(MessageContext.TRANSPORT_HEADERS);
+                headers.put(VFSConstants.REPLY_FILE_NAME, name);
+            }
+            try {
+                ((InboundResponseSender) message.getProperty(InboundEndpointConstants.INBOUND_ENDPOINT_RESPONSE_WORKER))
+                        .sendBack(message);
+                refused.add(false);
+            } catch (SynapseException expected) {
+                refused.add(true);
+            }
+        };
+        deploy(input.toUri().toString(), true);
+        consumer.poll();
+        assertEquals(List.of(!inside), refused, name);
+        List<Path> written;
+        try (java.util.stream.Stream<Path> files = Files.walk(folder)) {
+            written = files.filter(Files::isRegularFile).filter(file -> !file.startsWith(input))
+                    .collect(java.util.stream.Collectors.toList());
+        }
+        if (inside) {
+            assertEquals(1, written.size(), written.toString());
+            assertTrue(written.get(0).startsWith(replies) && written.get(0).endsWith("out.xml"), written.toString());
+            // The reply is written, so the file is done and the action after process runs, DELETE here.
+            assertEquals(1L, consumer.getHealth().get("filesDone"));
+            assertFalse(Files.exists(source));
+        } else {
+            assertEquals(List.of(), written);
+            // The refused reply fails the file, so the action after failure runs, NONE here: the file stays.
+            assertEquals(1L, consumer.getHealth().get("filesFailed"));
+            assertTrue(Files.exists(source));
+        }
+    }
+
     @Test
     void twoWorkersWaitForEachOtherOnOneFixedReplyName() throws Exception {
         Path input = Files.createDirectory(folder.resolve("input"));
