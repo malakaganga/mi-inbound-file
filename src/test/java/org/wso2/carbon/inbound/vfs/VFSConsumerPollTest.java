@@ -1144,28 +1144,37 @@ class VFSConsumerPollTest {
         }
     }
 
-    @Test
+    // The line of a reply that could not be written names the source file of the reply and never the reply address,
+    // also for an address with a password that the deploy check takes and that a resolve reads as host and port.
+    @ParameterizedTest
+    @ValueSource(strings = {"local", "password", "noHeaders"})
     @SuppressWarnings("unchecked")
-    void aReplyThatCanNotBeWrittenIsNamedInItsLineAndNotInItsErrorCode() throws Exception {
+    void aReplyThatCanNotBeWrittenNamesItsSourceFileAndNotItsAddress(String scenario) throws Exception {
         Path input = Files.createDirectory(folder.resolve("asked"));
         Path source = Files.writeString(input.resolve("sample.xml"), "<receipt>body</receipt>");
-        properties.setProperty(VFSConstants.REPLY_FILE_URI, source.resolve("impossible").toUri().toString());
+        properties.setProperty(VFSConstants.REPLY_FILE_URI, scenario.equals("password")
+                ? "sftp://replyuser:22?pa@127.0.0.1:1/out" : source.resolve("impossible").toUri().toString());
         List<Object> codes = new ArrayList<>();
         mediation = message -> {
             InboundResponseSender sender = (InboundResponseSender)
                     message.getProperty(InboundEndpointConstants.INBOUND_ENDPOINT_RESPONSE_WORKER);
             MessageContext axis = message.getAxis2MessageContext();
             axis.setProperty(org.apache.axis2.Constants.Configuration.MESSAGE_TYPE, "application/xml");
-            assertThrows(SynapseException.class, () -> sender.sendBack(message));
             Map<String, Object> headers = (Map<String, Object>) axis.getProperty(MessageContext.TRANSPORT_HEADERS);
+            if (scenario.equals("noHeaders")) {
+                headers.remove("RELATIVE_PATH");
+            }
+            assertThrows(SynapseException.class, () -> sender.sendBack(message));
             codes.add(headers.get(org.apache.synapse.commons.vfs.VFSConstants.ERROR_CODE));
         };
         deploy(input.toUri().toString(), true);
         try (Logs logs = new Logs()) {
             consumer.poll();
-            List<String> lines = logs.messages(Level.SEVERE, endpoint, "Could not write the reply file.");
+            List<String> lines = logs.messages(Level.SEVERE, endpoint, "Could not write the reply file");
             assertEquals(1, lines.size());
-            assertTrue(lines.get(0).contains("/asked/sample.xml/impossible"), lines.get(0));
+            String text = lines.get(0).substring(lines.get(0).indexOf("] ") + 2);
+            assertEquals(scenario.equals("noHeaders") ? "Could not write the reply file."
+                    : "Could not write the reply file for /sample.xml.", text);
         } finally {
             close();
         }

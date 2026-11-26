@@ -49,6 +49,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.apache.axis2.context.MessageContext.TRANSPORT_HEADERS;
 import static org.apache.synapse.commons.vfs.VFSConstants.ERROR_CODE;
+import static org.wso2.carbon.inbound.vfs.VFSConstants.FILE_NAME;
 import static org.wso2.carbon.inbound.vfs.VFSConstants.REPLY_FILE_NAME;
 import static org.wso2.carbon.inbound.vfs.VFSConstants.REPLY_FILE_URI;
 
@@ -113,10 +114,10 @@ public final class ReplySender implements InboundResponseSender {
 
         uri = Utils.extractPath(Utils.stripVfsSchemeIfPresent(uri));
         long start = System.nanoTime();
-        String target = uri;
         try {
             LockIo io = session.lockIo(REPLY_FILE_URI);
             try (FileObject location = io.resolve(uri)) {
+                String target = uri;
                 if (location.getType() == FileType.FOLDER) {
                     Object name = headers.get(REPLY_FILE_NAME);
                     String replyName = name == null ? config.getReplayFileName() : name.toString();
@@ -148,7 +149,13 @@ public final class ReplySender implements InboundResponseSender {
             }
         } catch (IOException | RuntimeException error) {
             recordLoss(uri, error, start);
-            throw failure(headers, "Could not write the reply file.", "Could not write the reply file. " + target);
+            // The reply address is not named on purpose: it is the text the user wrote, and the mask of a line can
+            // not hide every password in it. The line names the source file of the reply.
+            Object relative = headers.get("RELATIVE_PATH");
+            Object name = headers.get(FILE_NAME);
+            throw failure(headers, "Could not write the reply file.", relative == null || name == null
+                    ? "Could not write the reply file."
+                    : "Could not write the reply file for " + relative + "/" + name + ".");
         }
     }
 
