@@ -19,6 +19,7 @@ package org.wso2.carbon.inbound.vfs;
 
 import org.apache.axiom.om.OMOutputFormat;
 import org.apache.axis2.AxisFault;
+import org.apache.axis2.Constants;
 import org.apache.axis2.builder.ApplicationXMLBuilder;
 import org.apache.axis2.context.ConfigurationContext;
 import org.apache.axis2.context.MessageContext;
@@ -64,6 +65,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import java.nio.charset.StandardCharsets;
 import org.apache.axis2.transport.http.ApplicationXMLFormatter;
 import org.apache.synapse.SynapseConstants;
@@ -1159,7 +1162,7 @@ class VFSConsumerPollTest {
             InboundResponseSender sender = (InboundResponseSender)
                     message.getProperty(InboundEndpointConstants.INBOUND_ENDPOINT_RESPONSE_WORKER);
             MessageContext axis = message.getAxis2MessageContext();
-            axis.setProperty(org.apache.axis2.Constants.Configuration.MESSAGE_TYPE, "application/xml");
+            axis.setProperty(Constants.Configuration.MESSAGE_TYPE, "application/xml");
             Map<String, Object> headers = (Map<String, Object>) axis.getProperty(MessageContext.TRANSPORT_HEADERS);
             if (scenario.equals("noHeaders")) {
                 headers.remove("RELATIVE_PATH");
@@ -1400,20 +1403,27 @@ class VFSConsumerPollTest {
         }
     }
 
-    // A reply name that leaves the reply folder is refused, from the header and from the parameter. An absolute name
-    // and a name with a scheme are appended to the reply folder, so they are written inside it. Nothing is written
+    // A reply name that leaves the reply folder is refused, from the header and from the parameter, also with Windows
+    // separators and with encoded separators and dots. An absolute name, a name with a scheme and a double encoded
+    // separator are appended to the reply folder, so they are written inside it. Nothing is written
     // outside the reply folder. The reply folder lies two levels deep, so a name that escaped it would still land
     // inside the test folder.
     @ParameterizedTest
-    @CsvSource({"../out.xml,true", "../out.xml,false", "../../out.xml,true", "../../out.xml,false",
-            "nested/../../out.xml,true", "nested/../../out.xml,false", "ABSOLUTE,true", "ABSOLUTE,false",
-            "SCHEME,true", "SCHEME,false"})
-    void aReplyNameStaysInsideTheReplyFolder(String supplied, boolean header) throws Exception {
+    @CsvSource({"../out.xml,true,refused", "../out.xml,false,refused", "../../out.xml,true,refused",
+            "../../out.xml,false,refused", "nested/../../out.xml,true,refused",
+            "nested/../../out.xml,false,refused", "..\\out.xml,true,refused", "..\\out.xml,false,refused",
+            "..\\..\\out.xml,true,refused", "..\\..\\out.xml,false,refused",
+            "nested\\..\\..\\out.xml,true,refused", "nested\\..\\..\\out.xml,false,refused",
+            "..%2Fout.xml,true,refused", "..%2Fout.xml,false,refused", "..%5Cout.xml,true,refused",
+            "..%5Cout.xml,false,refused", "%2e%2e/out.xml,true,refused", "%2e%2e/out.xml,false,refused",
+            "..%252Fout.xml,true,inside", "..%252Fout.xml,false,inside", "ABSOLUTE,true,inside",
+            "ABSOLUTE,false,inside", "SCHEME,true,inside", "SCHEME,false,inside"})
+    void aReplyNameStaysInsideTheReplyFolder(String supplied, boolean header, String outcome) throws Exception {
         Path input = Files.createDirectory(folder.resolve("input"));
         Path source = Files.writeString(input.resolve("source.xml"), "<receipt>body</receipt>");
         Path replies = Files.createDirectories(folder.resolve("one").resolve("two").resolve("replies"));
         Path outside = Files.createDirectory(folder.resolve("outside"));
-        boolean inside = supplied.equals("ABSOLUTE") || supplied.equals("SCHEME");
+        boolean inside = outcome.equals("inside");
         String name = supplied.equals("ABSOLUTE") ? outside.resolve("out.xml").toString()
                 : supplied.equals("SCHEME") ? outside.resolve("out.xml").toUri().toString() : supplied;
         properties.setProperty(VFSConstants.REPLY_FILE_URI, replies.toUri().toString());
@@ -1421,7 +1431,7 @@ class VFSConsumerPollTest {
         List<Boolean> refused = new ArrayList<>();
         mediation = message -> {
             MessageContext axis = message.getAxis2MessageContext();
-            axis.setProperty(org.apache.axis2.Constants.Configuration.MESSAGE_TYPE, "application/xml");
+            axis.setProperty(Constants.Configuration.MESSAGE_TYPE, "application/xml");
             if (header) {
                 @SuppressWarnings("unchecked")
                 Map<String, Object> headers = (Map<String, Object>) axis.getProperty(MessageContext.TRANSPORT_HEADERS);
@@ -1439,13 +1449,14 @@ class VFSConsumerPollTest {
         consumer.poll();
         assertEquals(List.of(!inside), refused, name);
         List<Path> written;
-        try (java.util.stream.Stream<Path> files = Files.walk(folder)) {
+        try (Stream<Path> files = Files.walk(folder)) {
             written = files.filter(Files::isRegularFile).filter(file -> !file.startsWith(input))
-                    .collect(java.util.stream.Collectors.toList());
+                    .collect(Collectors.toList());
         }
         if (inside) {
             assertEquals(1, written.size(), written.toString());
-            assertTrue(written.get(0).startsWith(replies) && written.get(0).endsWith("out.xml"), written.toString());
+            assertTrue(written.get(0).startsWith(replies)
+                    && written.get(0).getFileName().toString().endsWith("out.xml"), written.toString());
             // The reply is written, so the file is done and the action after process runs, DELETE here.
             assertEquals(1L, consumer.getHealth().get("filesDone"));
             assertFalse(Files.exists(source));
