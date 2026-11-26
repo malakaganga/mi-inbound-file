@@ -802,6 +802,38 @@ class FileTaskTest {
     }
 
     @Test
+    void aPostActionThatStopsIsNamedInItsLine() throws Exception {
+        destinations.setProperty(VFSConstants.TRANSPORT_FILE_MOVE_AFTER_PROCESS,
+                folder.resolve("notCreatedYet").toUri().toString());
+        successAction = "MOVE";
+        controlledOwner = true;
+        retryMillis = 0;
+        start(0, 1000);
+        when(inject.invoke(any(), any(), anyMap(), any())).thenReturn(true);
+        doReturn(0L).doThrow(new IllegalStateException("Local accounting failed."))
+                .doCallRealMethod().when(generation.pollSession).failedSourceResets();
+        Logger logger = Logger.getLogger(EndpointHealth.class.getName());
+        List<String> warnings = new ArrayList<>();
+        Handler handler = new Handler() {
+            public void publish(LogRecord record) {
+                if (record.getLevel() == Level.WARNING && record.getMessage().contains("File processing stopped.")) {
+                    warnings.add(record.getMessage());
+                }
+            }
+            public void flush() { }
+            public void close() { }
+        };
+        logger.addHandler(handler);
+        try {
+            assertEquals(FileTask.Outcome.STATE_PENDING, admitted(file, "").processOnPoll(null, false));
+            assertEquals(1, warnings.size(), warnings.toString());
+            assertTrue(warnings.get(0).contains(file.toUri().toString()), warnings.toString());
+        } finally {
+            logger.removeHandler(handler);
+        }
+    }
+
+    @Test
     void interruptedAccountingTransfersTheKnownMoveFailureToPendingOnce() throws Exception {
         Path done = folder.resolve("notCreatedYet");
         destinations.setProperty(VFSConstants.TRANSPORT_FILE_MOVE_AFTER_PROCESS, done.toUri().toString());

@@ -1088,6 +1088,91 @@ class VFSConsumerPollTest {
     }
 
     @Test
+    void aFileThatStopsIsNamedInItsLine() throws Exception {
+        Path input = Files.createDirectory(folder.resolve("stopped"));
+        Files.writeString(input.resolve("a.xml"), "<a/>");
+        // A failure that is no file system error, at the look of the store after the lock is taken.
+        setupSession = session -> doAnswer(call -> {
+            LockIo io = spy((LockIo) call.callRealMethod());
+            doAnswer(look -> {
+                if (look.<String>getArgument(0).endsWith("/stopped/a.xml") && Arrays.stream(
+                        new Throwable().getStackTrace()).anyMatch(frame -> frame.getMethodName().equals("beginFile"))) {
+                    throw new IllegalStateException("Stop fixture");
+                }
+                return look.callRealMethod();
+            }).when(io).resolve(anyString());
+            return io;
+        }).when(session).lockIo(anyString());
+        deploy(input.toUri().toString(), true);
+        try (Logs logs = new Logs()) {
+            consumer.poll();
+            List<String> lines = logs.messages(Level.WARNING, endpoint, "File processing stopped.");
+            assertEquals(1, lines.size());
+            assertTrue(lines.get(0).contains("/stopped/a.xml"), lines.get(0));
+        } finally {
+            close();
+        }
+    }
+
+    @Test
+    void anUploadCheckThatLosesTheConnectionNamesTheFile() throws Exception {
+        Path input = Files.createDirectory(folder.resolve("uploading"));
+        Files.writeString(input.resolve("a.xml"), "<a/>");
+        AtomicBoolean lose = new AtomicBoolean(true);
+        setupSession = session -> doAnswer(call -> {
+            LockIo io = spy((LockIo) call.callRealMethod());
+            doAnswer(look -> {
+                if (look.<String>getArgument(0).endsWith("/uploading/a.xml") && lose.getAndSet(false)) {
+                    FileSystemException lost = new FileSystemException("Test upload check connection lost.");
+                    lost.setFault(Fault.TRANSPORT);
+                    throw lost;
+                }
+                return look.callRealMethod();
+            }).when(io).resolve(anyString());
+            return io;
+        }).when(session).lockIo(anyString());
+        properties.setProperty(VFSConstants.TRANSPORT_CHECK_SIZE_INTERVAL, "1");
+        deploy(input.toUri().toString(), true);
+        try (Logs logs = new Logs()) {
+            consumer.poll();
+            List<String> lines = logs.messages(Level.WARNING, endpoint, "The file was not taken in this poll.");
+            assertEquals(1, lines.size());
+            assertTrue(lines.get(0).contains("/uploading/a.xml"), lines.get(0));
+            assertEquals(List.of(), deliveries);
+        } finally {
+            close();
+        }
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void aReplyThatCanNotBeWrittenIsNamedInItsLineAndNotInItsErrorCode() throws Exception {
+        Path input = Files.createDirectory(folder.resolve("asked"));
+        Path source = Files.writeString(input.resolve("sample.xml"), "<receipt>body</receipt>");
+        properties.setProperty(VFSConstants.REPLY_FILE_URI, source.resolve("impossible").toUri().toString());
+        List<Object> codes = new ArrayList<>();
+        mediation = message -> {
+            InboundResponseSender sender = (InboundResponseSender)
+                    message.getProperty(InboundEndpointConstants.INBOUND_ENDPOINT_RESPONSE_WORKER);
+            MessageContext axis = message.getAxis2MessageContext();
+            axis.setProperty(org.apache.axis2.Constants.Configuration.MESSAGE_TYPE, "application/xml");
+            assertThrows(SynapseException.class, () -> sender.sendBack(message));
+            Map<String, Object> headers = (Map<String, Object>) axis.getProperty(MessageContext.TRANSPORT_HEADERS);
+            codes.add(headers.get(org.apache.synapse.commons.vfs.VFSConstants.ERROR_CODE));
+        };
+        deploy(input.toUri().toString(), true);
+        try (Logs logs = new Logs()) {
+            consumer.poll();
+            List<String> lines = logs.messages(Level.SEVERE, endpoint, "Could not write the reply file.");
+            assertEquals(1, lines.size());
+            assertTrue(lines.get(0).contains("/asked/sample.xml/impossible"), lines.get(0));
+        } finally {
+            close();
+        }
+        assertEquals(List.of("Could not write the reply file."), codes);
+    }
+
+    @Test
     void skippedTicksPreserveTheLastObservationAndSuccessfulListingsAdvanceIt() throws Exception {
         String uri = folder.toUri().toString();
         AtomicLong elapsed = new AtomicLong();

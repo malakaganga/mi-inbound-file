@@ -598,6 +598,8 @@ public final class PollCycle {
                             this::pause);
                     if (!upload.stable) {
                         if (upload.failure != null && upload.failure.getKind().isTransport()) {
+                            services.log.warn("The file was not taken in this poll. " + file.uri + " "
+                                    + upload.failure.getStatusText());
                             handleFailure(upload.failure);
                         } else {
                             services.log.debug("The file is still uploading. " + file.uri);
@@ -652,6 +654,7 @@ public final class PollCycle {
             } catch (IOException problem) {
                 Classification cause = classify(problem);
                 if (cause.getKind().isTransport()) {
+                    services.log.warn("The file was not taken in this poll. " + file.uri + " " + cause.getStatusText());
                     handleFailure(cause);
                 } else {
                     services.log.debug("Could not check the upload of " + file.uri);

@@ -284,7 +284,8 @@ public final class FileTask {
             if (postAction != null) {
                 return postAction.interrupted(failure);
             }
-            services.log.warn("File processing stopped. " + services.classifier.classify(failure, 0, READ).getStatusText());
+            services.log.warn("File processing stopped. " + uri + " "
+                    + services.classifier.classify(failure, 0, READ).getStatusText());
             releaseChecked();
             return Outcome.SKIPPED;
         } finally {
@@ -572,7 +573,7 @@ public final class FileTask {
         Outcome interrupted(RuntimeException error) {
             Classification failure = services.classifier.classify(error, 0, started
                     ? ErrorClassifier.CallType.CHANGE : READ);
-            services.log.warn("File processing stopped. " + failure.getStatusText());
+            services.log.warn("File processing stopped. " + uri + " " + failure.getStatusText());
             if (generation.isRetired()) {
                 return Outcome.RETIRED;
             }

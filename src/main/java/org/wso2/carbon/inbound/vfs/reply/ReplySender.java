@@ -113,10 +113,10 @@ public final class ReplySender implements InboundResponseSender {
 
         uri = Utils.extractPath(Utils.stripVfsSchemeIfPresent(uri));
         long start = System.nanoTime();
+        String target = uri;
         try {
             LockIo io = session.lockIo(REPLY_FILE_URI);
             try (FileObject location = io.resolve(uri)) {
-                String target = uri;
                 if (location.getType() == FileType.FOLDER) {
                     Object name = headers.get(REPLY_FILE_NAME);
                     String replyName = name == null ? config.getReplayFileName() : name.toString();
@@ -148,7 +148,7 @@ public final class ReplySender implements InboundResponseSender {
             }
         } catch (IOException | RuntimeException error) {
             recordLoss(uri, error, start);
-            throw failure(headers, "Could not write the reply file.");
+            throw failure(headers, "Could not write the reply file.", "Could not write the reply file. " + target);
         }
     }
 
@@ -207,9 +207,14 @@ public final class ReplySender implements InboundResponseSender {
     }
 
     private SynapseException failure(Map<String, Object> headers, String message) {
+        return failure(headers, message, message);
+    }
+
+    // The line may name the reply file. The error code and the exception keep the text with no address.
+    private SynapseException failure(Map<String, Object> headers, String message, String line) {
         failed = true;
         headers.put(ERROR_CODE, message);
-        log.error(message);
+        log.error(line);
         return new SynapseException(message);
     }
 }
