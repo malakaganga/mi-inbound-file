@@ -301,6 +301,10 @@ public final class FileTask {
                 }
             } finally {
                 abandon();
+                // The poll keeps its tasks until it ends, so the task lets go of its closed content and file here.
+                // A closed SFTP stream still refers to its channel and the channel's buffers.
+                content = null;
+                source = null;
                 point(14);
             }
         }

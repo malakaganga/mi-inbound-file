@@ -17,10 +17,13 @@
  */
 package org.wso2.carbon.inbound.vfs;
 
+import org.apache.axiom.om.OMAbstractFactory;
+import org.apache.axiom.om.OMElement;
 import org.apache.axiom.om.OMOutputFormat;
 import org.apache.axis2.AxisFault;
 import org.apache.axis2.Constants;
 import org.apache.axis2.builder.ApplicationXMLBuilder;
+import org.apache.axis2.builder.Builder;
 import org.apache.axis2.context.ConfigurationContext;
 import org.apache.axis2.context.MessageContext;
 import org.apache.axis2.engine.AxisConfiguration;
@@ -45,7 +48,11 @@ import org.wso2.vfs.shared.failstate.FailState;
 import org.wso2.vfs.shared.health.EndpointHealth;
 import org.wso2.vfs.shared.lock.LockIo;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
+import java.lang.ref.WeakReference;
 import java.net.SocketException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -63,11 +70,13 @@ import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import java.nio.charset.StandardCharsets;
+import javax.xml.namespace.QName;
 import org.apache.axis2.transport.http.ApplicationXMLFormatter;
 import org.apache.synapse.SynapseConstants;
 import org.apache.synapse.SynapseException;
@@ -102,6 +111,7 @@ class VFSConsumerPollTest {
     VFSConsumer consumer;
 
     java.util.function.Consumer<Axis2MessageContext> mediation = message -> { };
+    Builder xmlBuilder = new ApplicationXMLBuilder();
 
     SynapseEnvironment deploy(String uri, boolean sequential) throws Exception {
         SynapseEnvironment environment = mock(SynapseEnvironment.class);
@@ -112,7 +122,7 @@ class VFSConsumerPollTest {
         when(inbound.getArtifactContainerName()).thenReturn("poll");
         when(configuration.getInboundEndpoint(endpoint)).thenReturn(inbound);
         AxisConfiguration axis = new AxisConfiguration();
-        axis.addMessageBuilder("application/xml", new ApplicationXMLBuilder());
+        axis.addMessageBuilder("application/xml", xmlBuilder);
         axis.addMessageFormatter("application/xml", new ApplicationXMLFormatter());
         ConfigurationContext context = new ConfigurationContext(axis);
         when(environment.createMessageContext()).thenAnswer(call -> {
@@ -249,6 +259,65 @@ class VFSConsumerPollTest {
         consumer.poll();
         assertEquals(List.of("/a.xml", "/b.xml", "/c.xml"), deliveries);
         assertTrue(Files.exists(folder.resolve("reserved.lock")));
+    }
+
+    // One poll of 1,000 files ran out of heap: the poll kept every task it ran, and each task its closed content. A
+    // poll must let go of the content of each file it took, while it still takes the next ones, in both modes.
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void aPollKeepsNoContentOfTheFilesItAlreadyTook(boolean sequential) throws Exception {
+        int files = 8;
+        for (int i = 0; i < files; i++) {
+            write("f" + i + ".xml", "<f" + i + "/>", 1);
+        }
+        if (!sequential) {
+            properties.setProperty("transport.vfs.WorkerPoolSize", "2");
+        }
+        List<WeakReference<Object>> streams = Collections.synchronizedList(new ArrayList<>());
+        ThreadLocal<Integer> mine = new ThreadLocal<>();
+        // The builder keeps no reference to the stream: the message holds its text only.
+        xmlBuilder = (in, type, message) -> {
+            byte[] bytes;
+            try {
+                bytes = readAll(in);
+            } catch (IOException failure) {
+                throw new AxisFault("Test read failed.", failure);
+            }
+            synchronized (streams) {
+                mine.set(streams.size());
+                streams.add(new WeakReference<>(in));
+            }
+            OMElement element = OMAbstractFactory.getOMFactory().createOMElement(new QName("file"));
+            element.setText(new String(bytes, StandardCharsets.UTF_8));
+            return element;
+        };
+        AtomicReference<Boolean> released = new AtomicReference<>();
+        AtomicInteger flows = new AtomicInteger();
+        mediation = message -> {
+            if (flows.incrementAndGet() == files) {
+                // In the last flow, the poll still runs. Every other file is taken or ends its task now.
+                List<WeakReference<Object>> others = new ArrayList<>(streams);
+                others.remove((int) mine.get());
+                try {
+                    released.set(FileTaskTest.collected(others));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        };
+        deploy(folder.toUri().toString(), sequential);
+        consumer.poll();
+        assertEquals(files, deliveries.size());
+        assertEquals(Boolean.TRUE, released.get(), "The poll kept the content of a file it already took.");
+    }
+
+    private static byte[] readAll(InputStream in) throws IOException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        byte[] buffer = new byte[1024];
+        for (int count = in.read(buffer); count >= 0; count = in.read(buffer)) {
+            out.write(buffer, 0, count);
+        }
+        return out.toByteArray();
     }
 
     @Test

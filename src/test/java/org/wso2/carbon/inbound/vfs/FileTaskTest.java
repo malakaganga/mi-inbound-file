@@ -73,7 +73,9 @@ import org.wso2.vfs.shared.health.HealthRegistry;
 import org.wso2.vfs.shared.lock.LockOutcome;
 import org.wso2.vfs.shared.lock.ShareLock;
 
+import java.io.IOException;
 import java.io.InputStream;
+import java.lang.ref.WeakReference;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -137,6 +139,10 @@ class FileTaskTest {
     }
 
     void start(int workers, long stopMillis) {
+        start(workers, stopMillis, inject);
+    }
+
+    void start(int workers, long stopMillis, FileInjectHandler handler) {
         Properties properties = new Properties();
         properties.setProperty(VFSConstants.TRANSPORT_FILE_FILE_URI, folder.toUri().toString());
         properties.setProperty(VFSConstants.TRANSPORT_FILE_ACTION_AFTER_PROCESS, successAction);
@@ -153,7 +159,7 @@ class FileTaskTest {
         for (String key : destinations.stringPropertyNames()) {
             targets.put(key, MoveTargetSpec.from(key, destinations.getProperty(key), config, health.namedLog()));
         }
-        services = new FileTask.Services(endpoint, config, locks, store, new ReadErrorCounter(3), inject,
+        services = new FileTask.Services(endpoint, config, locks, store, new ReadErrorCounter(3), handler,
                 targets, health);
         generation = life.enterPoll();
     }
@@ -451,6 +457,53 @@ class FileTaskTest {
         assertEquals(fields.get("protocol"), published.get("protocol"));
         assertEquals("orders", published.get("route"));
         assertEquals(1, previous.size());
+    }
+
+    // The poll keeps its tasks until it ends, so a finished task must let go of its content. A closed SFTP stream
+    // still refers to its channel and the channel's buffers, and one poll of 1,000 files ran out of heap that way.
+    @Test
+    void aFinishedTaskKeepsNeitherItsContentNorItsStream() throws Exception {
+        List<WeakReference<Object>> read = new ArrayList<>();
+        Properties props = new Properties();
+        props.setProperty(VFSConstants.TRANSPORT_FILE_FILE_URI, folder.toUri().toString());
+        // A real handler and no mock: a mock keeps the arguments of its calls.
+        FileInjectHandler reading = new FileInjectHandler("files", "onError", mock(SynapseEnvironment.class),
+                new VFSConfig(props)) {
+            @Override
+            public SequenceMediator sequence() {
+                return sequence;
+            }
+
+            @Override
+            public boolean invoke(SequenceMediator seq, String name, Map<String, Object> headers, Content content) {
+                try {
+                    InputStream stream = content.open();
+                    while (stream.read() >= 0) {
+                        // The flow reads the whole file, the task closes the stream.
+                    }
+                    read.add(new WeakReference<>(content));
+                    read.add(new WeakReference<>(stream));
+                } catch (IOException failure) {
+                    throw new AssertionError(failure);
+                }
+                return true;
+            }
+        };
+        start(0, 1000, reading);
+        FileTask task = admitted(file, "");
+        assertEquals(FileTask.Outcome.PROCESSED, task.processOnPoll(null, false));
+        assertEquals(2, read.size());
+        assertTrue(collected(read), "The finished task kept its content or its stream.");
+        // The task stays reachable up to here, as it does in the list of its poll.
+        assertNotNull(task);
+    }
+
+    static boolean collected(List<WeakReference<Object>> references) throws InterruptedException {
+        for (int i = 0; i < 100 && references.stream().anyMatch(reference -> reference.get() != null); i++) {
+            System.gc();
+            Thread.sleep(50);
+        }
+        return references.stream().allMatch(reference -> reference.get() == null);
     }
 
     @Test
