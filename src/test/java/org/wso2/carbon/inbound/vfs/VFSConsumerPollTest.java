@@ -36,6 +36,7 @@ import org.apache.sshd.common.file.virtualfs.VirtualFileSystemFactory;
 import org.apache.sshd.server.SshServer;
 import org.apache.sshd.server.keyprovider.SimpleGeneratorHostKeyProvider;
 import org.apache.sshd.server.session.ServerSession;
+import org.apache.sshd.sftp.common.SftpConstants;
 import org.apache.sshd.sftp.server.SftpEventListener;
 import org.apache.sshd.sftp.server.SftpSubsystemFactory;
 import org.junit.jupiter.api.AfterEach;
@@ -351,6 +352,9 @@ class VFSConsumerPollTest {
             assertEquals(files, deliveries.size());
             // The poll session and each worker session open their channel once. A channel per file is the fault.
             assertTrue(server.channels() <= 2 * (1 + workers), "SFTP channels opened: " + server.channels());
+            // The move resolves its temporary names with no probe: 22.4 lookups per file, where 25.4 asked three
+            // made up names of the target folder as well.
+            assertTrue(server.lookups() <= 23 * files, "STAT and LSTAT requests: " + server.lookups());
             try (Stream<Path> left = Files.list(in)) {
                 assertEquals(Collections.emptyList(), left.collect(Collectors.toList()));
             }
@@ -365,6 +369,7 @@ class VFSConsumerPollTest {
     static final class CountingSftpServer implements AutoCloseable {
         private final SshServer server = SshServer.setUpDefaultServer();
         private final AtomicInteger channels = new AtomicInteger();
+        private final AtomicInteger lookups = new AtomicInteger();
 
         CountingSftpServer(Path root, Path hostKey) throws IOException {
             server.setHost("127.0.0.1");
@@ -378,6 +383,13 @@ class VFSConsumerPollTest {
                 public void initialized(ServerSession session, int version) {
                     channels.incrementAndGet();
                 }
+
+                @Override
+                public void received(ServerSession session, int type, int id) {
+                    if (type == SftpConstants.SSH_FXP_STAT || type == SftpConstants.SSH_FXP_LSTAT) {
+                        lookups.incrementAndGet();
+                    }
+                }
             });
             server.setSubsystemFactories(Collections.singletonList(sftp));
             server.start();
@@ -389,6 +401,11 @@ class VFSConsumerPollTest {
 
         int channels() {
             return channels.get();
+        }
+
+        // The STAT and LSTAT requests the server answered.
+        int lookups() {
+            return lookups.get();
         }
 
         @Override

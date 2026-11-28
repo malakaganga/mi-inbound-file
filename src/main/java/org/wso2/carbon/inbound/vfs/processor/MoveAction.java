@@ -18,6 +18,7 @@
 
 package org.wso2.carbon.inbound.vfs.processor;
 
+import org.wso2.carbon.inbound.vfs.Utils;
 import org.wso2.carbon.inbound.vfs.VFSConfig;
 import org.wso2.carbon.inbound.vfs.conn.VfsSession;
 import org.wso2.carbon.inbound.vfs.poll.Generation;
@@ -98,6 +99,13 @@ public final class MoveAction {
         }
         session.remoteCallEnded();
         return result;
+    }
+
+    // The name that a resolve of the session gives (the same parser on the same address), in the file system of the
+    // destination, with no probe of the server.
+    static FileObject unprobed(FileObject destination, String uri) throws FileSystemException {
+        FileSystem fileSystem = destination.getFileSystem();
+        return fileSystem.resolveFile(fileSystem.getFileSystemManager().resolveURI(Utils.stripVfsSchemeIfPresent(uri)));
     }
 
     private final class Attempt {
@@ -194,9 +202,11 @@ public final class MoveAction {
             TempName second = TempNames.begin(name, suffix);
             try {
                 String tempUri = target.sibling(temp.name());
-                MoveOptions options = new MoveOptions(true, resolve(spec.parameter, tempUri), first.name(),
-                        resolve(spec.parameter, target.sibling(first.name())),
-                        resolve(spec.parameter, target.sibling(second.name())));
+                // The temporary names are only names for the commit, so they are resolved with no probe of the
+                // server. The destination resolve before them is the connection check of the move.
+                MoveOptions options = new MoveOptions(true, unprobed(destination, tempUri), first.name(),
+                        unprobed(destination, target.sibling(first.name())),
+                        unprobed(destination, target.sibling(second.name())));
                 start = System.nanoTime();
                 try {
                     FileObjectUtils.getAbstractFileObject(source).moveTo(destination, options);
