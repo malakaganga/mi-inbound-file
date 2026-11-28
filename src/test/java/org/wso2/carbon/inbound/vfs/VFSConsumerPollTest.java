@@ -327,6 +327,47 @@ class VFSConsumerPollTest {
         return out.toByteArray();
     }
 
+    // A type read of a listed FTP file made a parent of its own with a copy of the whole folder listing, and the poll
+    // kept every listed file until its turn. The scan closes each listed file once it has read its type and details,
+    // so a waiting file keeps no parent.
+    @Test
+    void theScanClosesEachListedFileBeforeTheFirstTake() throws Exception {
+        for (int i = 0; i < 3; i++) {
+            write("f" + i + ".xml", "<f" + i + "/>", 1);
+        }
+        String root = folder.toUri().toString();
+        List<FileObject> listed = Collections.synchronizedList(new ArrayList<>());
+        setupSession = session -> doAnswer(call -> {
+            FileObject resolved = (FileObject) call.callRealMethod();
+            String uri = call.getArgument(0);
+            if (!uri.replaceAll("/+$", "").equals(root.replaceAll("/+$", ""))) {
+                return resolved;
+            }
+            FileObject spied = spy(resolved);
+            doAnswer(children -> {
+                FileObject[] real = (FileObject[]) children.callRealMethod();
+                FileObject[] watched = new FileObject[real.length];
+                for (int i = 0; i < real.length; i++) {
+                    watched[i] = spy(real[i]);
+                    listed.add(watched[i]);
+                }
+                return watched;
+            }).when(spied).getChildren();
+            return spied;
+        }).when(session).resolve(anyString(), any());
+        AtomicReference<Boolean> closed = new AtomicReference<>();
+        mediation = message -> {
+            if (closed.get() == null) {
+                closed.set(listed.size() == 3 && listed.stream().allMatch(file -> mockingDetails(file).getInvocations()
+                        .stream().anyMatch(invocation -> invocation.getMethod().getName().equals("close"))));
+            }
+        };
+        deploy(root, true);
+        consumer.poll();
+        assertEquals(3, deliveries.size());
+        assertEquals(Boolean.TRUE, closed.get(), "A listed file was not closed before the first take.");
+    }
+
     // An SFTP read took a channel of its own for each file: the read asked the type of the file while it held the
     // idle channel, so the stat opened another. A poll of many files must keep its channels, in both modes.
     @ParameterizedTest

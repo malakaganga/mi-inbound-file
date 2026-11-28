@@ -478,6 +478,10 @@ public final class PollCycle {
                 } else if (directory && recursive && !reserved(name, true)) {
                     folders.add(name);
                 }
+                // The type and the details are read. The close drops the parent that a type read can make with a copy
+                // of the folder listing (FTP), so a file that waits for its turn keeps none. The take refreshes the
+                // file anyway.
+                child.close();
                 names.put(name, entry);
             }
             FolderListing listing = FolderListing.of(folder.getName().getURI(), names);
