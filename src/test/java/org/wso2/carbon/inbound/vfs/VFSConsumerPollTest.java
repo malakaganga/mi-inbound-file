@@ -32,6 +32,12 @@ import org.apache.synapse.core.SynapseEnvironment;
 import org.apache.synapse.core.axis2.Axis2MessageContext;
 import org.apache.synapse.inbound.InboundEndpoint;
 import org.apache.synapse.mediators.base.SequenceMediator;
+import org.apache.sshd.common.file.virtualfs.VirtualFileSystemFactory;
+import org.apache.sshd.server.SshServer;
+import org.apache.sshd.server.keyprovider.SimpleGeneratorHostKeyProvider;
+import org.apache.sshd.server.session.ServerSession;
+import org.apache.sshd.sftp.server.SftpEventListener;
+import org.apache.sshd.sftp.server.SftpSubsystemFactory;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -318,6 +324,77 @@ class VFSConsumerPollTest {
             out.write(buffer, 0, count);
         }
         return out.toByteArray();
+    }
+
+    // An SFTP read took a channel of its own for each file: the read asked the type of the file while it held the
+    // idle channel, so the stat opened another. A poll of many files must keep its channels, in both modes.
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void aPollOverSftpKeepsItsChannels(boolean sequential) throws Exception {
+        int files = 20;
+        Path root = folder.resolve("sftp");
+        Path in = Files.createDirectories(root.resolve("in"));
+        Path done = Files.createDirectories(root.resolve("done"));
+        for (int i = 0; i < files; i++) {
+            Files.write(in.resolve("f" + i + ".xml"), ("<f" + i + "/>").getBytes(StandardCharsets.UTF_8));
+        }
+        try (CountingSftpServer server = new CountingSftpServer(root, folder.resolve("hostkey.ser"))) {
+            String base = "sftp://rig:rig@127.0.0.1:" + server.port();
+            properties.setProperty("transport.vfs.ActionAfterProcess", "MOVE");
+            properties.setProperty("transport.vfs.MoveAfterProcess", base + "/done");
+            int workers = sequential ? 0 : 2;
+            if (!sequential) {
+                properties.setProperty("transport.vfs.WorkerPoolSize", String.valueOf(workers));
+            }
+            deploy(base + "/in", sequential);
+            consumer.poll();
+            assertEquals(files, deliveries.size());
+            // The poll session and each worker session open their channel once. A channel per file is the fault.
+            assertTrue(server.channels() <= 2 * (1 + workers), "SFTP channels opened: " + server.channels());
+            try (Stream<Path> left = Files.list(in)) {
+                assertEquals(Collections.emptyList(), left.collect(Collectors.toList()));
+            }
+            try (Stream<Path> moved = Files.list(done)) {
+                assertEquals(files, moved.count());
+            }
+        }
+    }
+
+    // An SFTP server on a folder that counts the SFTP channels it opened. It has the hard link extension of OpenSSH
+    // that the lock of the inbound uses.
+    static final class CountingSftpServer implements AutoCloseable {
+        private final SshServer server = SshServer.setUpDefaultServer();
+        private final AtomicInteger channels = new AtomicInteger();
+
+        CountingSftpServer(Path root, Path hostKey) throws IOException {
+            server.setHost("127.0.0.1");
+            server.setPort(0);
+            server.setKeyPairProvider(new SimpleGeneratorHostKeyProvider(hostKey));
+            server.setPasswordAuthenticator((user, password, session) -> user.equals(password));
+            server.setFileSystemFactory(new VirtualFileSystemFactory(root));
+            SftpSubsystemFactory sftp = new SftpSubsystemFactory();
+            sftp.addSftpEventListener(new SftpEventListener() {
+                @Override
+                public void initialized(ServerSession session, int version) {
+                    channels.incrementAndGet();
+                }
+            });
+            server.setSubsystemFactories(Collections.singletonList(sftp));
+            server.start();
+        }
+
+        int port() {
+            return server.getPort();
+        }
+
+        int channels() {
+            return channels.get();
+        }
+
+        @Override
+        public void close() throws IOException {
+            server.stop(true);
+        }
     }
 
     @Test
